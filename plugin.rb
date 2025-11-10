@@ -27,66 +27,64 @@ after_initialize do
     end
   end
 
-  module ::TexdemEvents
-    class EventFetcher
-      def fetch_events
-        category_ids = parse_category_ids(SiteSetting.texdem_events_category_ids)
-        return [] if category_ids.empty?
+module ::TexdemEvents
+  class EventFetcher
+    EVENT_TAG = "event".freeze
 
-        topics = Topic
-          .where(category_id: category_ids)
-          .where(visible: true, deleted_at: nil)
-          .order("created_at DESC")
-          .limit(SiteSetting.texdem_events_limit)
+    def fetch_events
+      category_ids = parse_category_ids(SiteSetting.texdem_events_category_ids)
+      return [] if category_ids.empty?
 
-        topics.map { |topic| map_topic_to_event(topic) }.compact
-      end
+      topics = Topic
+        .joins(:tags)
+        .where(category_id: category_ids)
+        .where(visible: true, deleted_at: nil)
+        .where(tags: { name: EVENT_TAG })
+        .order("created_at DESC")
+        .limit(SiteSetting.texdem_events_limit)
 
-      private
-
-      def parse_category_ids(raw)
-        return [] if raw.blank?
-        raw.split(",").map(&:strip).map(&:to_i).reject(&:zero?)
-      end
-
-      # Tag conventions:
-      #   date-YYYY-MM-DD
-      #   time-HH:MM
-      #   county-harris
-      #   loc-katy-tx
-      def map_topic_to_event(topic)
-        tags = topic.tags.map(&:name)
-
-        date_tag   = tags.find { |t| t.start_with?("date-") }
-        time_tag   = tags.find { |t| t.start_with?("time-") }
-        county_tag = tags.find { |t| t.start_with?("county-") }
-        loc_tag    = tags.find { |t| t.start_with?("loc-") }
-
-        date = date_tag&.sub("date-", "")
-        time = time_tag&.sub("time-", "") || "00:00"
-
-        start_iso =
-          if date
-            "#{date}T#{time}:00"
-          else
-            topic.created_at&.iso8601
-          end
-
-        {
-          id:       "discourse-#{topic.id}",
-          title:    topic.title,
-          start:    start_iso,
-          end:      nil,
-          county:   county_tag&.sub("county-", "")&.titleize,
-          location: loc_tag&.sub("loc-", "")&.tr("-", " "),
-          url:      topic.url
-        }
-      end
+      topics.map { |topic| map_topic_to_event(topic) }.compact
     end
-  end
 
-  Discourse::Application.routes.append do
-    # GET /texdem-events.json
-    get "/texdem-events" => "texdem_events/events#index", :defaults => { format: :json }
+    private
+
+    def parse_category_ids(raw)
+      return [] if raw.blank?
+      raw.split(",").map(&:strip).map(&:to_i).reject(&:zero?)
+    end
+
+    # Tag conventions:
+    #   date-YYYY-MM-DD
+    #   time-HH:MM
+    #   county-harris
+    #   loc-katy-tx
+    def map_topic_to_event(topic)
+      tags = topic.tags.map(&:name)
+
+      date_tag   = tags.find { |t| t.start_with?("date-") }
+      time_tag   = tags.find { |t| t.start_with?("time-") }
+      county_tag = tags.find { |t| t.start_with?("county-") }
+      loc_tag    = tags.find { |t| t.start_with?("loc-") }
+
+      date = date_tag&.sub("date-", "")
+      time = time_tag&.sub("time-", "") || "00:00"
+
+      start_iso =
+        if date
+          "#{date}T#{time}:00"
+        else
+          topic.created_at&.iso8601
+        end
+
+      {
+        id:       "discourse-#{topic.id}",
+        title:    topic.title,
+        start:    start_iso,
+        end:      nil,
+        county:   county_tag&.sub("county-", "")&.titleize,
+        location: loc_tag&.sub("loc-", "")&.tr("-", " "),
+        url:      topic.url
+      }
+    end
   end
 end
