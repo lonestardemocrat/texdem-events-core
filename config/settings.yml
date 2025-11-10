@@ -1,0 +1,10 @@
+plugins:
+  texdem_events_enabled:
+    default: true
+    client: false
+  texdem_events_category_ids:
+    default: "10,12"
+    client: false
+  texdem_events_limit:
+    default: 100
+    client: false
