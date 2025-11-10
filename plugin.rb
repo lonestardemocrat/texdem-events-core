@@ -33,7 +33,7 @@ after_initialize do
   #
   # EVENT FETCHER
   #
-  module ::TexdemEvents
+   module ::TexdemEvents
     class EventFetcher
       EVENT_TAG = "event".freeze
 
@@ -44,11 +44,9 @@ after_initialize do
         topics = Topic
           .where(category_id: category_ids)
           .where(visible: true, deleted_at: nil)
-          .where(deleted_at: nil)
           .order("created_at DESC")
           .limit(SiteSetting.texdem_events_limit)
 
-        # Only keep topics that have the "event" tag
         topics.map { |topic| map_topic_to_event(topic) }.compact
       end
 
@@ -68,7 +66,7 @@ after_initialize do
       def map_topic_to_event(topic)
         tags = topic.tags.map(&:name)
 
-        # Skip anything that isn't explicitly tagged as an event
+        # Only include topics explicitly tagged as events
         return nil unless tags.include?(EVENT_TAG)
 
         date_tag   = tags.find { |t| t.start_with?("date-") }
@@ -79,21 +77,32 @@ after_initialize do
         date = date_tag&.sub("date-", "")
         time = time_tag&.sub("time-", "") || "00:00"
 
-        start_iso =
+        # Build start time from date+time tags if present, otherwise fall back
+        start_time =
           if date
-            "#{date}T#{time}:00"
+            begin
+              Time.zone.parse("#{date} #{time}")
+            rescue
+              topic.created_at
+            end
           else
-            topic.created_at&.iso8601
+            topic.created_at
           end
 
+        # Find root category: parent if it exists, otherwise the topic's own category
+        cat        = topic.category
+        root       = cat&.parent_category || cat
+        root_name  = root&.name
+
         {
-          id:       "discourse-#{topic.id}",
-          title:    topic.title,
-          start:    start_iso,
-          end:      nil,
-          county:   county_tag&.sub("county-", "")&.titleize,
-          location: loc_tag&.sub("loc-", "")&.tr("-", " "),
-          url:      topic.url
+          id:            "discourse-#{topic.id}",
+          title:         topic.title,
+          start:         start_time&.iso8601,
+          end:           nil,
+          county:        county_tag&.sub("county-", "")&.titleize,
+          location:      loc_tag&.sub("loc-", "")&.tr("-", " "),
+          root_category: root_name,
+          url:           topic.url
         }
       end
     end
