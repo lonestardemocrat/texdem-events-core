@@ -61,16 +61,41 @@ after_initialize do
         raw.split(",").map(&:strip).map(&:to_i).reject(&:zero?)
       end
 
-      # Tag conventions:
-      #   event
-      #   date-YYYY-MM-DD
-      #   time-HH:MM
-      #   county-harris
-      #   loc-katy-tx
+      # Helper to pull a field from the "Event Details" block.
+      # Matches lines like:
+      #   * **Date:** 2025-12-09
+      #   * **Start time:** 06:00 PM
+      #   * **Address:** 4455 University Dr, Houston, TX 77204
+      def extract_event_detail(topic, label)
+        raw = topic.first_post&.raw
+        return nil if raw.blank?
+
+        raw.each_line do |line|
+          # Markdown bullet with bold label
+          if line =~ /\*\*#{Regexp.escape(label)}:\*\*\s*(.+)\s*$/i
+            return $1.strip
+          # Plain "Label: value"
+          elsif line =~ /#{Regexp.escape(label)}:\s*(.+)\s*$/i
+            return $1.strip
+          end
+        end
+
+        nil
+      end
+
+      # Tag + content conventions:
+      #   tag "event"           -> include
+      #   tag date-YYYY-MM-DD   -> optional
+      #   tag time-HH:MM        -> optional
+      #   tag county-harris     -> optional
+      #   tag loc-katy-tx       -> optional
       #
-      # Content convention:
-      #   A line in the first post like:
-      #   "Address: 4455 University Dr, Houston, TX 77204"
+      #   Event Details in first post (preferred source):
+      #   - Date:
+      #   - Start time:
+      #   - County:
+      #   - Location name:
+      #   - Address:
       #
       def map_topic_to_event(topic)
         tags = topic.tags.map(&:name)
@@ -78,19 +103,33 @@ after_initialize do
         # Only include topics explicitly tagged as events
         return nil unless tags.include?(EVENT_TAG)
 
+        # Try tags first (so you can override later if you want),
+        # then fall back to Event Details content.
         date_tag   = tags.find { |t| t.start_with?("date-") }
         time_tag   = tags.find { |t| t.start_with?("time-") }
         county_tag = tags.find { |t| t.start_with?("county-") }
         loc_tag    = tags.find { |t| t.start_with?("loc-") }
 
-        date = date_tag&.sub("date-", "")
-        time = time_tag&.sub("time-", "") || "00:00"
+        date_from_tag   = date_tag&.sub("date-", "")
+        time_from_tag   = time_tag&.sub("time-", "")
+        county_from_tag = county_tag&.sub("county-", "")&.titleize
+        loc_from_tag    = loc_tag&.sub("loc-", "")&.tr("-", " ")
 
-        # Build start time from date+time tags if present, otherwise fall back
+        # From Event Details block
+        date_from_body      = extract_event_detail(topic, "Date")
+        start_time_from_body= extract_event_detail(topic, "Start time")
+        county_from_body    = extract_event_detail(topic, "County")
+        loc_name_from_body  = extract_event_detail(topic, "Location name")
+        address_from_body   = extract_event_detail(topic, "Address")
+
+        # Date/time: prefer Event Details; fall back to tags; then created_at
+        date_str = date_from_body || date_from_tag
+        time_str = start_time_from_body || time_from_tag || "00:00"
+
         start_time =
-          if date
+          if date_str
             begin
-              Time.zone.parse("#{date} #{time}")
+              Time.zone.parse("#{date_str} #{time_str}")
             rescue
               topic.created_at
             end
@@ -98,21 +137,20 @@ after_initialize do
             topic.created_at
           end
 
-        # Find root category: parent if it exists, otherwise the topic's own category
-        cat        = topic.category
-        root       = cat&.parent_category || cat
-        root_name  = root&.name
+        # County: prefer Event Details, then tag
+        county = (county_from_body || county_from_tag)&.strip
+        county = county.titleize if county
 
-        # County + location label
-        county   = county_tag&.sub("county-", "")&.titleize
+        # Location: prefer Location name, then Address, then loc- tag
+        location =
+          loc_name_from_body ||
+          address_from_body ||
+          loc_from_tag
 
-        # Prefer loc- tag for location label; if missing, fall back to Address:
-        address  = extract_address(topic)
-        location_from_tag = loc_tag&.sub("loc-", "")&.tr("-", " ")
-        location = location_from_tag || address
-
-        # Get latitude / longitude from Address: (auto-geocode)
-        latitude, longitude = geocode_address(address)
+        # Root / host org
+        cat       = topic.category
+        root      = cat&.parent_category || cat
+        root_name = root&.name
 
         {
           id:            "discourse-#{topic.id}",
@@ -122,62 +160,12 @@ after_initialize do
           county:        county,
           location:      location,
           root_category: root_name,
-          latitude:      latitude,
-          longitude:     longitude,
           url:           topic.url
         }
       end
-
-      # Extract "Address: ..." line from the first post raw markdown
-      def extract_address(topic)
-        raw = topic.first_post&.raw
-        return nil if raw.blank?
-
-        raw.each_line do |line|
-          if line =~ /Address:\s*(.+)\s*$/i
-            return $1.strip
-          end
-        end
-
-        nil
-      end
-
-      # Geocode an address using OpenStreetMap Nominatim.
-      # Returns [lat, lng] or [nil, nil] on failure.
-      def geocode_address(address)
-        return [nil, nil] if address.blank?
-
-        begin
-          uri = URI("https://nominatim.openstreetmap.org/search")
-          params = {
-            format: "json",
-            q: address,
-            limit: 1
-          }
-          uri.query = URI.encode_www_form(params)
-
-          req = Net::HTTP::Get.new(uri)
-          # Nominatim asks for a descriptive User-Agent
-          req["User-Agent"] = "TexDemEventsCore/0.4 (contact@texdem.org)"
-
-          res = Net::HTTP.start(uri.host, uri.port, use_ssl: true) do |http|
-            http.request(req)
-          end
-
-          return [nil, nil] unless res.is_a?(Net::HTTPSuccess)
-
-          data = JSON.parse(res.body)
-          first = data.first
-          return [nil, nil] unless first
-
-          [first["lat"].to_f, first["lon"].to_f]
-        rescue => e
-          Rails.logger.warn("TexDem geocode failed for '#{address}': #{e}")
-          [nil, nil]
-        end
-      end
     end
   end
+
 
   #
   # ROUTE
