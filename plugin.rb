@@ -42,9 +42,8 @@ after_initialize do
     class EventFetcher
       EVENT_TAG = "event".freeze
 
-      # Prefer the application's configured time zone, fall back to America/Chicago
-      SERVER_TIME_ZONE =
-        (Time.zone || ActiveSupport::TimeZone["America/Chicago"])
+      # Prefer the application's configured time zone; fall back to America/Chicago
+      SERVER_TIME_ZONE = (Time.zone || ActiveSupport::TimeZone["America/Chicago"])
 
       def fetch_events
         log_timezone_warning
@@ -104,8 +103,8 @@ after_initialize do
         return if actual == expected
 
         Rails.logger.warn(
-          "TexdemEvents: server/application time zone is #{actual.inspect}, "\
-          "but expected #{expected.inspect}. Check Discourse time zone "\
+          "TexdemEvents: server/application time zone is #{actual.inspect}, " \
+          "but expected #{expected.inspect}. Check Discourse time zone " \
           "settings or server TZ if this is unintended."
         )
       end
@@ -150,7 +149,10 @@ after_initialize do
 
           [lat, lng]
         rescue => e
-          Rails.logger.warn("TexdemEvents: geocode failed for #{location.inspect}: #{e.class} #{e.message}")
+          Rails.logger.warn(
+            "TexdemEvents: geocode failed for #{location.inspect}: " \
+            "#{e.class} #{e.message}"
+          )
           [nil, nil]
         end
       end
@@ -236,7 +238,12 @@ after_initialize do
           lat:           lat,
           lng:           lng,
           root_category: root_name,
-          url:           topic.url
+          url:           topic.url,
+          timezone:      (
+            SERVER_TIME_ZONE.respond_to?(:tzinfo) ?
+              SERVER_TIME_ZONE.tzinfo.name :
+              SERVER_TIME_ZONE.name
+          )
         }
       end
     end
