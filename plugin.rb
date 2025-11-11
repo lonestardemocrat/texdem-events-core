@@ -7,6 +7,7 @@
 require 'net/http'
 require 'uri'
 require 'json'
+require 'digest/sha1'
 
 enabled_site_setting :texdem_events_enabled
 
@@ -41,7 +42,13 @@ after_initialize do
     class EventFetcher
       EVENT_TAG = "event".freeze
 
+      # Prefer the application's configured time zone, fall back to America/Chicago
+      SERVER_TIME_ZONE =
+        (Time.zone || ActiveSupport::TimeZone["America/Chicago"])
+
       def fetch_events
+        log_timezone_warning
+
         category_ids = parse_category_ids(SiteSetting.texdem_events_category_ids)
         return [] if category_ids.empty?
 
@@ -83,6 +90,71 @@ after_initialize do
         nil
       end
 
+      # Warn if the app/server timezone isn't America/Chicago
+      def log_timezone_warning
+        expected = "America/Chicago"
+
+        actual =
+          if SERVER_TIME_ZONE.respond_to?(:tzinfo)
+            SERVER_TIME_ZONE.tzinfo.name
+          else
+            SERVER_TIME_ZONE.name
+          end
+
+        return if actual == expected
+
+        Rails.logger.warn(
+          "TexdemEvents: server/application time zone is #{actual.inspect}, "\
+          "but expected #{expected.inspect}. Check Discourse time zone "\
+          "settings or server TZ if this is unintended."
+        )
+      end
+
+      # Geocode a location string using Nominatim and cache the result.
+      #
+      # Returns [lat, lng] floats, or [nil, nil] if not found.
+      def geocode_location(location)
+        return [nil, nil] if location.blank?
+
+        cache_key = "texdem_events:geocode:#{Digest::SHA1.hexdigest(location)}"
+
+        if (cached = Discourse.cache.read(cache_key))
+          return cached
+        end
+
+        begin
+          uri = URI("https://nominatim.openstreetmap.org/search")
+          params = { q: location, format: "json", limit: 1 }
+          uri.query = URI.encode_www_form(params)
+
+          http = Net::HTTP.new(uri.host, uri.port)
+          http.use_ssl = (uri.scheme == "https")
+          http.read_timeout = 3
+          http.open_timeout = 3
+
+          request = Net::HTTP::Get.new(uri)
+          request["User-Agent"] = "TexDemEventsCore/0.4.0 (forum.texdem.org)"
+
+          response = http.request(request)
+          return [nil, nil] unless response.is_a?(Net::HTTPSuccess)
+
+          json = JSON.parse(response.body)
+          first = json.first
+          return [nil, nil] unless first
+
+          lat = first["lat"].to_f
+          lng = first["lon"].to_f
+
+          # Cache for a week so we don't re-hit the API constantly
+          Discourse.cache.write(cache_key, [lat, lng], expires_in: 7.days)
+
+          [lat, lng]
+        rescue => e
+          Rails.logger.warn("TexdemEvents: geocode failed for #{location.inspect}: #{e.class} #{e.message}")
+          [nil, nil]
+        end
+      end
+
       # Tag + content conventions:
       #   tag "event"           -> include
       #   tag date-YYYY-MM-DD   -> optional
@@ -103,8 +175,7 @@ after_initialize do
         # Only include topics explicitly tagged as events
         return nil unless tags.include?(EVENT_TAG)
 
-        # Try tags first (so you can override later if you want),
-        # then fall back to Event Details content.
+        # Try tags first, then fall back to Event Details content.
         date_tag   = tags.find { |t| t.start_with?("date-") }
         time_tag   = tags.find { |t| t.start_with?("time-") }
         county_tag = tags.find { |t| t.start_with?("county-") }
@@ -116,11 +187,11 @@ after_initialize do
         loc_from_tag    = loc_tag&.sub("loc-", "")&.tr("-", " ")
 
         # From Event Details block
-        date_from_body      = extract_event_detail(topic, "Date")
-        start_time_from_body= extract_event_detail(topic, "Start time")
-        county_from_body    = extract_event_detail(topic, "County")
-        loc_name_from_body  = extract_event_detail(topic, "Location name")
-        address_from_body   = extract_event_detail(topic, "Address")
+        date_from_body       = extract_event_detail(topic, "Date")
+        start_time_from_body = extract_event_detail(topic, "Start time")
+        county_from_body     = extract_event_detail(topic, "County")
+        loc_name_from_body   = extract_event_detail(topic, "Location name")
+        address_from_body    = extract_event_detail(topic, "Address")
 
         # Date/time: prefer Event Details; fall back to tags; then created_at
         date_str = date_from_body || date_from_tag
@@ -129,12 +200,12 @@ after_initialize do
         start_time =
           if date_str
             begin
-              Time.zone.parse("#{date_str} #{time_str}")
+              SERVER_TIME_ZONE.parse("#{date_str} #{time_str}")
             rescue
-              topic.created_at
+              topic.created_at.in_time_zone(SERVER_TIME_ZONE)
             end
           else
-            topic.created_at
+            topic.created_at.in_time_zone(SERVER_TIME_ZONE)
           end
 
         # County: prefer Event Details, then tag
@@ -146,6 +217,9 @@ after_initialize do
           loc_name_from_body ||
           address_from_body ||
           loc_from_tag
+
+        # Auto-geocode coordinates from location/address
+        lat, lng = geocode_location(location)
 
         # Root / host org
         cat       = topic.category
@@ -159,13 +233,14 @@ after_initialize do
           end:           nil,
           county:        county,
           location:      location,
+          lat:           lat,
+          lng:           lng,
           root_category: root_name,
           url:           topic.url
         }
       end
     end
   end
-
 
   #
   # ROUTE
