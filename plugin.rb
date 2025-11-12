@@ -193,11 +193,12 @@ SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
         county = (county_from_body || county_from_tag)&.strip
         county = county.titleize if county
 
-        # Location: prefer Location name, then Address, then loc- tag
-        location =
-          loc_name_from_body ||
-          address_from_body ||
-          loc_from_tag
+# Location: prefer full Address, then Location name, then loc- tag
+location =
+  address_from_body ||
+  loc_name_from_body ||
+  loc_from_tag
+
 
         # Build a richer geocode query (helps UH case)
         geo_query =
