@@ -232,7 +232,8 @@ location =
             SERVER_TIME_ZONE.respond_to?(:tzinfo) ?
               SERVER_TIME_ZONE.tzinfo.name :
               SERVER_TIME_ZONE.name
-          )
+          ),
+          debug_version: "texdem-events-v3"
         }
       end
     end
