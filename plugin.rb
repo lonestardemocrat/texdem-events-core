@@ -42,8 +42,9 @@ after_initialize do
     class EventFetcher
       EVENT_TAG = "event".freeze
 
-      # All events are treated as America/Chicago
-      SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
+# All events are treated as America/Chicago
+SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
+
 
       def fetch_events
         category_ids = parse_category_ids(SiteSetting.texdem_events_category_ids)
