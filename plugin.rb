@@ -42,12 +42,10 @@ after_initialize do
     class EventFetcher
       EVENT_TAG = "event".freeze
 
-      # Prefer the application's configured time zone; fall back to America/Chicago
-      SERVER_TIME_ZONE = (Time.zone || ActiveSupport::TimeZone["America/Chicago"])
+      # All events are treated as America/Chicago
+      SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
 
       def fetch_events
-        log_timezone_warning
-
         category_ids = parse_category_ids(SiteSetting.texdem_events_category_ids)
         return [] if category_ids.empty?
 
@@ -87,26 +85,6 @@ after_initialize do
         end
 
         nil
-      end
-
-      # Warn if the app/server timezone isn't America/Chicago
-      def log_timezone_warning
-        expected = "America/Chicago"
-
-        actual =
-          if SERVER_TIME_ZONE.respond_to?(:tzinfo)
-            SERVER_TIME_ZONE.tzinfo.name
-          else
-            SERVER_TIME_ZONE.name
-          end
-
-        return if actual == expected
-
-        Rails.logger.warn(
-          "TexdemEvents: server/application time zone is #{actual.inspect}, " \
-          "but expected #{expected.inspect}. Check Discourse time zone " \
-          "settings or server TZ if this is unintended."
-        )
       end
 
       # Geocode a location string using Nominatim and cache the result.
@@ -220,8 +198,17 @@ after_initialize do
           address_from_body ||
           loc_from_tag
 
-        # Auto-geocode coordinates from location/address
-        lat, lng = geocode_location(location)
+        # Build a richer geocode query (helps UH case)
+        geo_query =
+          if location && county
+            "#{location}, #{county} County, Texas"
+          elsif location
+            "#{location}, Texas"
+          else
+            nil
+          end
+
+        lat, lng = geocode_location(geo_query)
 
         # Root / host org
         cat       = topic.category
