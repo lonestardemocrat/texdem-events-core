@@ -192,26 +192,38 @@ SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
         county = (county_from_body || county_from_tag)&.strip
         county = county.titleize if county
 
-# Location: prefer full Address, then Location name, then loc- tag
-location =
-  address_from_body ||
-  loc_name_from_body ||
-  loc_from_tag
+        # What we *want* to show:
+        display_location_name =
+          loc_name_from_body.presence ||
+          loc_from_tag
 
+        display_address = address_from_body
 
-# Build geocode query from location only.
-# If location already contains TX/Texas, use it as-is.
-geo_query =
-  if location
-    if location =~ /\b(TX|Texas)\b/i
-      location
-    else
-      "#{location}, Texas"
-    end
-  else
-    nil
-  end
+        # For backward compatibility, keep `location` as a single string,
+        # but bias toward the address (for geocoding).
+        location =
+          display_address ||
+          display_location_name ||
+          loc_from_tag
 
+        # Build a richer geocode query (helps UH case)
+        geo_query =
+          if display_address && county
+            "#{display_address}, #{county} County, Texas"
+          elsif display_address
+            "#{display_address}, Texas"
+          elsif location && county
+            "#{location}, #{county} County, Texas"
+          elsif location
+            "#{location}, Texas"
+          else
+            nil
+          end
+
+        Rails.logger.warn(
+          "TexdemEvents geocode: topic=#{topic.id} title=#{topic.title.inspect} " \
+          "location=#{location.inspect} county=#{county.inspect}"
+        )
 
         lat, lng = geocode_location(geo_query)
 
@@ -226,7 +238,9 @@ geo_query =
           start:         start_time&.iso8601,
           end:           nil,
           county:        county,
-          location:      location,
+          location:      location,               # combined / legacy
+          location_name: display_location_name,  # NEW
+          address:       display_address,        # NEW
           lat:           lat,
           lng:           lng,
           root_category: root_name,
@@ -236,7 +250,7 @@ geo_query =
               SERVER_TIME_ZONE.tzinfo.name :
               SERVER_TIME_ZONE.name
           ),
-          debug_version: "texdem-events-v3"
+          debug_version: "texdem-events-v4"
         }
       end
     end
