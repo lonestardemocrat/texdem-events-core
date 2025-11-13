@@ -192,40 +192,41 @@ SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
         county = (county_from_body || county_from_tag)&.strip
         county = county.titleize if county
 
-        # What we *want* to show:
+        # What we *want* to show in JSON
         display_location_name =
           loc_name_from_body.presence ||
           loc_from_tag
 
         display_address = address_from_body
 
-        # For backward compatibility, keep `location` as a single string,
-        # but bias toward the address (for geocoding).
+        # Legacy combined location field (used by v3 front-ends)
         location =
           display_address ||
           display_location_name ||
           loc_from_tag
 
-        # Build a richer geocode query (helps UH case)
-        geo_query =
-          if display_address && county
-            "#{display_address}, #{county} County, Texas"
-          elsif display_address
-            "#{display_address}, Texas"
-          elsif location && county
-            "#{location}, #{county} County, Texas"
-          elsif location
-            "#{location}, Texas"
-          else
-            nil
-          end
+        # ---- Geocoding base string ----
+        # Use the cleanest, most specific string we can:
+        #   1) full address (best)
+        #   2) location name
+        #   3) loc- tag text
+        #
+        # We *don’t* append ", County, Texas" anymore because that
+        # caused the December event ("Multiple County") to fail.
+        geocode_base =
+          display_address ||
+          display_location_name ||
+          loc_from_tag
+
+        geo_query = geocode_base
 
         Rails.logger.warn(
           "TexdemEvents geocode: topic=#{topic.id} title=#{topic.title.inspect} " \
-          "location=#{location.inspect} county=#{county.inspect}"
+          "geocode_base=#{geocode_base.inspect} county=#{county.inspect}"
         )
 
         lat, lng = geocode_location(geo_query)
+
 
         # Root / host org
         cat       = topic.category
