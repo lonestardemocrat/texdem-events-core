@@ -140,7 +140,6 @@ SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
       #   tag "event"           -> include
       #   tag date-YYYY-MM-DD   -> optional
       #   tag time-HH:MM        -> optional
-      #   tag county-harris     -> optional
       #   tag loc-katy-tx       -> optional
       #
       #   Event Details in first post (preferred source):
@@ -200,15 +199,19 @@ location =
   loc_from_tag
 
 
-        # Build a richer geocode query (helps UH case)
-        geo_query =
-          if location && county
-            "#{location}, #{county} County, Texas"
-          elsif location
-            "#{location}, Texas"
-          else
-            nil
-          end
+# Build geocode query from location only.
+# If location already contains TX/Texas, use it as-is.
+geo_query =
+  if location
+    if location =~ /\b(TX|Texas)\b/i
+      location
+    else
+      "#{location}, Texas"
+    end
+  else
+    nil
+  end
+
 
         lat, lng = geocode_location(geo_query)
 
