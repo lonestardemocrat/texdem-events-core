@@ -135,6 +135,13 @@ SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
           [nil, nil]
         end
       end
+      def rsvp_count_for(topic)
+        TexdemEvents::Rsvp.where(topic_id: topic.id).count
+      rescue NameError
+        # If we haven't defined the Rsvp model yet, or the table doesn't exist,
+        # just return 0 so JSON doesn't explode while we're wiring things up.
+        0
+      end
 
       # Tag + content conventions:
       #   tag "event"           -> include
