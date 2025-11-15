@@ -89,20 +89,17 @@ after_initialize do
         return render_json_error("Missing required fields")
       end
 
+            # Create RSVP entry (minimal fields only for now)
       rsvp = ::TexdemEvents::Rsvp.new(
-        topic_id:      topic_id,
-        first_name:    first,
-        last_name:     last,
-        email:         email,
-        phone:         params[:phone],
-        address:       params[:address],
-        guests:        params[:guests],
-        wants_emails:  truthy_param?(params[:wants_emails]),
-        wants_forum:   truthy_param?(params[:wants_forum]),
-        agreed_terms:  truthy_param?(params[:agreed_terms]),
-        ip_address:    request.remote_ip,
-        user_agent:    request.user_agent
+        topic_id:   topic_id,
+        first_name: first,
+        last_name:  last,
+        email:      email,
+        phone:      params[:phone],
+        address:    params[:address],
+        guests:     params[:guests]
       )
+
 
       if rsvp.save
         render json: {
