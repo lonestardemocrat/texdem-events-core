@@ -261,30 +261,29 @@ SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
         root      = cat&.parent_category || cat
         root_name = root&.name
 
-{
-  id:            "discourse-#{topic.id}",
-  topic_id:      topic.id,               # NEW
-  title:         topic.title,
-  start:         start_time&.iso8601,
-  end:           nil,
-  county:        county,
-  location:      location,
-  location_name: display_location_name,
-  address:       display_address,
-  lat:           lat,
-  lng:           lng,
-  root_category: root_name,
-  url:           topic.url,
-  timezone:      (
-    SERVER_TIME_ZONE.respond_to?(:tzinfo) ?
-      SERVER_TIME_ZONE.tzinfo.name :
-      SERVER_TIME_ZONE.name
-  ),
-  rsvp_count:    rsvp_count_for(topic),  # NEW
-  debug_version: "texdem-events-v4"
-},
+        {
+          id:            "discourse-#{topic.id}",
+          topic_id:      topic.id,               # NEW
+          title:         topic.title,
+          start:         start_time&.iso8601,
+          end:           nil,
+          county:        county,
+          location:      location,               # combined / legacy
+          location_name: display_location_name,  # NEW
+          address:       display_address,        # NEW
+          lat:           lat,
+          lng:           lng,
+          root_category: root_name,
+          url:           topic.url,
+          timezone:      (
+            SERVER_TIME_ZONE.respond_to?(:tzinfo) ?
+              SERVER_TIME_ZONE.tzinfo.name :
+              SERVER_TIME_ZONE.name
+          ),
+          rsvp_count:    rsvp_count_for(topic),  # NEW
           debug_version: "texdem-events-v4"
         }
+
 
       end
     end
