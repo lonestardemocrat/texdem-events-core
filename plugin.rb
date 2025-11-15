@@ -34,6 +34,73 @@ after_initialize do
         allow_nil: true
     end
   end
+  #
+  # RSVP SUBMISSION CONTROLLER
+  #
+  class ::TexdemEvents::RsvpsController < ::ApplicationController
+    requires_plugin 'texdem-events-core'
+
+    skip_before_action :check_xhr
+    skip_before_action :redirect_to_login_if_required
+    skip_before_action :verify_authenticity_token  # allow external POST
+
+    # CORS
+    before_action :add_cors_headers
+
+    def create
+      topic_id = params[:topic_id].to_i
+      topic    = Topic.find_by(id: topic_id)
+
+      return render_json_error("Invalid topic") if topic.nil?
+
+      # Required fields
+      first = params[:first_name]&.strip
+      last  = params[:last_name]&.strip
+      email = params[:email]&.strip
+
+      unless first.present? && last.present? && email.present?
+        return render_json_error("Missing required fields")
+      end
+
+      # Create RSVP entry
+      rsvp = TexdemEvents::Rsvp.new(
+        topic_id:      topic_id,
+        first_name:    first,
+        last_name:     last,
+        email:         email,
+        phone:         params[:phone],
+        address:       params[:address],
+        guests:        params[:guests],
+        wants_emails:  params[:wants_emails] == "true",
+        wants_forum:   params[:wants_forum] == "true",
+        agreed_terms:  params[:agreed_terms] == "true",
+        ip_address:    request.remote_ip,
+        user_agent:    request.user_agent
+      )
+
+      if rsvp.save
+        render json: {
+          success: true,
+          message: "RSVP recorded",
+          rsvp_count: TexdemEvents::Rsvp.where(topic_id: topic_id).count
+        }
+      else
+        render_json_error(rsvp.errors.full_messages.join(", "))
+      end
+    end
+
+    private
+
+    def add_cors_headers
+      response.headers['Access-Control-Allow-Origin'] = 'https://texdem.org'
+      response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+      response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    end
+
+    def render_json_error(msg)
+      render json: { success: false, error: msg }, status: 422
+    end
+  end
 
   
   #
@@ -289,11 +356,13 @@ end
     end
   end
 
-  #
+   #
   # ROUTE
   #
   Discourse::Application.routes.append do
     # GET /texdem-events.json
-    get "/texdem-events" => "texdem_events/events#index", defaults: { format: :json }
+    get  "/texdem-events" => "texdem_events/events#index", defaults: { format: :json }
+
+    # POST /texdem-events/:topic_id/rsvp
+    post "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#create", defaults: { format: :json }
   end
-end
