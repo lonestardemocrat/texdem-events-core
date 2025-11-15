@@ -16,6 +16,27 @@ after_initialize do
   end
 
   #
+  # RSVP MODEL
+  #
+  module ::TexdemEvents
+    class Rsvp < ActiveRecord::Base
+      self.table_name = "texdem_event_rsvps"
+
+      belongs_to :topic
+
+      validates :topic_id,   presence: true
+      validates :first_name, presence: true
+      validates :last_name,  presence: true
+      validates :email,      presence: true
+
+      validates :guests,
+        numericality: { only_integer: true, greater_than_or_equal_to: 0 },
+        allow_nil: true
+    end
+  end
+
+  
+  #
   # CONTROLLER
   #
   class ::TexdemEvents::EventsController < ::ApplicationController
