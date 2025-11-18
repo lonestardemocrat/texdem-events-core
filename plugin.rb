@@ -37,13 +37,32 @@ after_initialize do
   end
 
   #
+  # GLOBAL CORS FOR /texdem-events*
+  #
+  ::ApplicationController.class_eval do
+    before_action :texdem_events_cors_headers,
+                  if: -> { request.path&.start_with?("/texdem-events") }
+
+    private
+
+    def texdem_events_cors_headers
+      response.headers['Access-Control-Allow-Origin']  = 'https://texdem.org'
+      response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+      response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    end
+  end
+
+  
+  #
   # EVENTS JSON CONTROLLER
   #
-  class ::TexdemEvents::EventsController < ::ApplicationController
-    requires_plugin 'texdem-events-core'
+class ::TexdemEvents::RsvpsController < ::ApplicationController
+  requires_plugin 'texdem-events-core'
 
-    skip_before_action :check_xhr
-    skip_before_action :redirect_to_login_if_required
+  skip_before_action :check_xhr
+  skip_before_action :redirect_to_login_if_required
+  skip_before_action :verify_authenticity_token  # allow external POST
+
 
     def index
       raise Discourse::NotFound unless SiteSetting.texdem_events_enabled
