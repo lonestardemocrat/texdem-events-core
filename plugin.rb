@@ -1,6 +1,6 @@
 # name: texdem-events-core
 # about: Minimal backend-only JSON endpoint for TexDem events, based on selected Discourse categories.
-# version: 0.5.0
+# version: 0.6.0
 # authors: TexDem
 # url: https://texdem.org
 
@@ -57,7 +57,7 @@ after_initialize do
   end
 
   #
-  # RSVP SUBMISSION CONTROLLER
+  # RSVP SUBMISSION + STATS CONTROLLER
   #
   class ::TexdemEvents::RsvpsController < ::ApplicationController
     requires_plugin 'texdem-events-core'
@@ -68,6 +68,33 @@ after_initialize do
 
     before_action :add_cors_headers
 
+    #
+    # GET /texdem-events/:topic_id/rsvp
+    # Returns aggregated RSVP stats for a topic.
+    #
+    def show
+      topic_id = params[:topic_id].to_i
+      topic    = Topic.find_by(id: topic_id)
+
+      return render_json_error("Invalid topic") if topic.nil?
+
+      rsvps = ::TexdemEvents::Rsvp.where(topic_id: topic_id)
+
+      rsvp_count  = rsvps.count
+      guest_count = rsvps.sum("COALESCE(guests, 0)")
+
+      render json: {
+        success: true,
+        topic_id: topic_id,
+        rsvp_count: rsvp_count,
+        guest_count: guest_count
+      }
+    end
+
+    #
+    # POST /texdem-events/:topic_id/rsvp
+    # Create a new RSVP row for an event.
+    #
     def create
       # Basic OPTIONS handling for CORS preflight
       if request.request_method == "OPTIONS"
@@ -89,7 +116,19 @@ after_initialize do
         return render_json_error("Missing required fields")
       end
 
-            # Create RSVP entry (minimal fields only for now)
+      guests_param = params[:guests]
+      guests_value =
+        if guests_param.present?
+          begin
+            Integer(guests_param)
+          rescue ArgumentError
+            return render_json_error("Guests must be an integer")
+          end
+        else
+          nil
+        end
+
+      # Create RSVP entry
       rsvp = ::TexdemEvents::Rsvp.new(
         topic_id:   topic_id,
         first_name: first,
@@ -97,9 +136,8 @@ after_initialize do
         email:      email,
         phone:      params[:phone],
         address:    params[:address],
-        guests:     params[:guests]
+        guests:     guests_value
       )
-
 
       if rsvp.save
         render json: {
@@ -116,7 +154,7 @@ after_initialize do
 
     def add_cors_headers
       response.headers['Access-Control-Allow-Origin'] = 'https://texdem.org'
-      response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+      response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
       response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
     end
 
@@ -161,6 +199,8 @@ after_initialize do
     #   * **Date:** 2025-12-09
     #   * **Start time:** 06:00 PM
     #   * **Address:** 4455 University Dr, Houston, TX 77204
+    #   * **County:** Harris
+    #   * **Location name:** Something
     def extract_event_detail(topic, label)
       raw = topic.first_post&.raw
       return nil if raw.blank?
@@ -201,7 +241,7 @@ after_initialize do
         http.open_timeout = 3
 
         request = Net::HTTP::Get.new(uri)
-        request["User-Agent"] = "TexDemEventsCore/0.5.0 (forum.texdem.org)"
+        request["User-Agent"] = "TexDemEventsCore/0.6.0 (forum.texdem.org)"
 
         response = http.request(request)
         return [nil, nil] unless response.is_a?(Net::HTTPSuccess)
@@ -342,7 +382,7 @@ after_initialize do
             SERVER_TIME_ZONE.name
         ),
         rsvp_count:    rsvp_count_for(topic),
-        debug_version: "texdem-events-v5"
+        debug_version: "texdem-events-v6"
       }
     end
   end
@@ -354,7 +394,11 @@ after_initialize do
     # GET /texdem-events.json
     get  "/texdem-events" => "texdem_events/events#index", defaults: { format: :json }
 
-    # POST /texdem-events/:topic_id/rsvp
+    # GET /texdem-events/:topic_id/rsvp (stats)
+    get  "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#show",
+         defaults: { format: :json }
+
+    # POST /texdem-events/:topic_id/rsvp (create)
     match "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#create",
           via: [:post, :options],
           defaults: { format: :json }
