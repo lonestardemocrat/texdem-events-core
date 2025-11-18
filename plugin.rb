@@ -1,6 +1,6 @@
 # name: texdem-events-core
 # about: Minimal backend-only JSON endpoint for TexDem events, based on selected Discourse categories.
-# version: 0.6.0
+# version: 0.7.0
 # authors: TexDem
 # url: https://texdem.org
 
@@ -46,31 +46,32 @@ after_initialize do
     private
 
     def texdem_events_cors_headers
-      response.headers['Access-Control-Allow-Origin']  = 'https://texdem.org'
+      # Allow texdem.org (and www) to call these endpoints from the browser
+      origin = request.headers['Origin']
+      allowed = ["https://texdem.org", "https://www.texdem.org"]
+
+      if origin.present? && allowed.include?(origin)
+        response.headers['Access-Control-Allow-Origin'] = origin
+      end
+
       response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
       response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
     end
   end
 
-  
   #
   # EVENTS JSON CONTROLLER
   #
-class ::TexdemEvents::RsvpsController < ::ApplicationController
-  requires_plugin 'texdem-events-core'
+  class ::TexdemEvents::EventsController < ::ApplicationController
+    requires_plugin 'texdem-events-core'
 
-  skip_before_action :check_xhr
-  skip_before_action :redirect_to_login_if_required
-  skip_before_action :verify_authenticity_token  # allow external POST
-
+    skip_before_action :check_xhr
+    skip_before_action :redirect_to_login_if_required
 
     def index
       raise Discourse::NotFound unless SiteSetting.texdem_events_enabled
 
       events = ::TexdemEvents::EventFetcher.new.fetch_events
-
-      # Allow texdem.org to fetch this JSON from the browser
-      response.headers['Access-Control-Allow-Origin'] = 'https://texdem.org'
       render_json_dump(events)
     end
   end
@@ -85,7 +86,13 @@ class ::TexdemEvents::RsvpsController < ::ApplicationController
     skip_before_action :redirect_to_login_if_required
     skip_before_action :verify_authenticity_token  # allow external POST
 
-    before_action :add_cors_headers
+    #
+    # OPTIONS /texdem-events/:topic_id/rsvp
+    # CORS preflight
+    #
+    def options
+      head :no_content
+    end
 
     #
     # GET /texdem-events/:topic_id/rsvp
@@ -115,12 +122,6 @@ class ::TexdemEvents::RsvpsController < ::ApplicationController
     # Create a new RSVP row for an event.
     #
     def create
-      # Basic OPTIONS handling for CORS preflight
-      if request.request_method == "OPTIONS"
-        head :no_content
-        return
-      end
-
       topic_id = params[:topic_id].to_i
       topic    = Topic.find_by(id: topic_id)
 
@@ -147,7 +148,6 @@ class ::TexdemEvents::RsvpsController < ::ApplicationController
           nil
         end
 
-      # Create RSVP entry
       rsvp = ::TexdemEvents::Rsvp.new(
         topic_id:   topic_id,
         first_name: first,
@@ -171,18 +171,8 @@ class ::TexdemEvents::RsvpsController < ::ApplicationController
 
     private
 
-    def add_cors_headers
-      response.headers['Access-Control-Allow-Origin'] = 'https://texdem.org'
-      response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-      response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-    end
-
     def render_json_error(msg)
       render json: { success: false, error: msg }, status: 422
-    end
-
-    def truthy_param?(val)
-      val == true || val.to_s.downcase == "true" || val.to_s == "1"
     end
   end
 
@@ -260,7 +250,7 @@ class ::TexdemEvents::RsvpsController < ::ApplicationController
         http.open_timeout = 3
 
         request = Net::HTTP::Get.new(uri)
-        request["User-Agent"] = "TexDemEventsCore/0.6.0 (forum.texdem.org)"
+        request["User-Agent"] = "TexDemEventsCore/0.7.0 (forum.texdem.org)"
 
         response = http.request(request)
         return [nil, nil] unless response.is_a?(Net::HTTPSuccess)
@@ -292,19 +282,6 @@ class ::TexdemEvents::RsvpsController < ::ApplicationController
       0
     end
 
-    # Tag + content conventions:
-    #   tag "event"           -> include
-    #   tag date-YYYY-MM-DD   -> optional
-    #   tag time-HH:MM        -> optional
-    #   tag loc-katy-tx       -> optional
-    #
-    #   Event Details in first post (preferred source):
-    #   - Date:
-    #   - Start time:
-    #   - County:
-    #   - Location name:
-    #   - Address:
-    #
     def map_topic_to_event(topic)
       tags = topic.tags.map(&:name)
 
@@ -401,7 +378,7 @@ class ::TexdemEvents::RsvpsController < ::ApplicationController
             SERVER_TIME_ZONE.name
         ),
         rsvp_count:    rsvp_count_for(topic),
-        debug_version: "texdem-events-v6"
+        debug_version: "texdem-events-v7"
       }
     end
   end
@@ -411,15 +388,20 @@ class ::TexdemEvents::RsvpsController < ::ApplicationController
   #
   Discourse::Application.routes.append do
     # GET /texdem-events.json
-    get  "/texdem-events" => "texdem_events/events#index", defaults: { format: :json }
+    get  "/texdem-events" => "texdem_events/events#index",
+         defaults: { format: :json }
 
     # GET /texdem-events/:topic_id/rsvp (stats)
     get  "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#show",
          defaults: { format: :json }
 
     # POST /texdem-events/:topic_id/rsvp (create)
-    match "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#create",
-          via: [:post, :options],
+    post "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#create",
+         defaults: { format: :json }
+
+    # OPTIONS /texdem-events/:topic_id/rsvp (CORS preflight)
+    match "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#options",
+          via: [:options],
           defaults: { format: :json }
   end
 end
