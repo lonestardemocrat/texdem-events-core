@@ -305,6 +305,14 @@ after_initialize do
       county_from_body     = extract_event_detail(topic, "County")
       loc_name_from_body   = extract_event_detail(topic, "Location name")
       address_from_body    = extract_event_detail(topic, "Address")
+      visibility_from_body = extract_event_detail(topic, "Visibility") 
+
+        # Default to public if not set
+  visibility = visibility_from_body&.strip&.downcase
+  is_private = (visibility == "private")
+
+  # Do NOT expose private events to texdem.org
+  return nil if is_private
 
       # Date/time: prefer Event Details; fall back to tags; then created_at
       date_str = date_from_body || date_from_tag
