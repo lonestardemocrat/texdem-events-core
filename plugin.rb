@@ -373,6 +373,8 @@ after_initialize do
       county_from_body   = extract_event_detail_from_raw(raw, "County")
       loc_name_from_body = extract_event_detail_from_raw(raw, "Location name")
       address_from_body  = extract_event_detail_from_raw(raw, "Address")
+      visibility_from_field = extract_event_detail_from_raw(raw, "Visibility")
+
 
       # County
       county = county_from_body&.strip
