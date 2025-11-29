@@ -361,4 +361,107 @@ after_initialize do
       end
 
       start_time = calendar_event.start   # UTC datetime
-      end_time   = calendar_event.finish
+      end_time   = calendar_event.finish  # UTC datetime (nil if none)
+      tz_name    = calendar_event.timezone.presence || SERVER_TIME_ZONE.name
+
+      # Pull details from the Event Details block (if present)
+      county_from_body   = extract_event_detail_from_raw(raw, "County")
+      loc_name_from_body = extract_event_detail_from_raw(raw, "Location name")
+      address_from_body  = extract_event_detail_from_raw(raw, "Address")
+
+      # County
+      county = county_from_body&.strip
+      county = county.titleize if county.present?
+
+      # What we want to show in JSON
+      display_location_name = loc_name_from_body.presence
+      display_address       = address_from_body
+
+      # Legacy combined "location" field
+      location =
+        display_address ||
+        display_location_name
+
+      # Geocoding base string
+      geocode_base =
+        display_address ||
+        display_location_name
+
+      lat = nil
+      lng = nil
+
+      if geocode_base.present?
+        Rails.logger.warn(
+          "TexdemEvents geocode: topic=#{post.topic_id} post=#{post.id} title=#{topic.title.inspect} " \
+          "geocode_base=#{geocode_base.inspect} county=#{county.inspect}"
+        )
+
+        lat, lng = geocode_location(geocode_base)
+      end
+
+      category        = topic.category
+      parent_category = category&.parent_category
+      root            = parent_category || category
+      root_name       = root&.name
+
+      event_title =
+        extract_event_title_from_raw(raw) ||
+        topic.title
+
+      tags =
+        begin
+          topic.tags.map(&:name)
+        rescue StandardError
+          []
+        end
+
+      {
+        id:                   "discourse-post-#{post.id}",
+        post_id:              post.id,
+        topic_id:             topic.id,
+        topic_title:          topic.title,
+        category_id:          category&.id,
+        category_name:        category&.name,
+        parent_category_name: parent_category&.name,
+        title:                event_title,
+        start:                start_time&.iso8601,
+        end:                  end_time&.iso8601,
+        county:               county,
+        location:             location,             # combined / legacy
+        location_name:        display_location_name,
+        address:              display_address,
+        lat:                  lat,
+        lng:                  lng,
+        root_category:        root_name,
+        url:                  post.full_url,
+        timezone:             tz_name,
+        visibility:           "public",
+        tags:                 tags,
+        rsvp_count:           rsvp_count_for(topic),
+        debug_version:        "texdem-events-v10"
+      }
+    end
+  end
+
+  #
+  # ROUTES
+  #
+  Discourse::Application.routes.append do
+    # GET /texdem-events.json
+    get  "/texdem-events" => "texdem_events/events#index",
+      defaults: { format: :json }
+
+    # GET /texdem-events/:topic_id/rsvp (stats)
+    get  "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#show",
+      defaults: { format: :json }
+
+    # POST /texdem-events/:topic_id/rsvp (create)
+    post "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#create",
+      defaults: { format: :json }
+
+    # OPTIONS /texdem-events/:topic_id/rsvp (CORS preflight)
+    match "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#options",
+      via: [:options],
+      defaults: { format: :json }
+  end
+end
