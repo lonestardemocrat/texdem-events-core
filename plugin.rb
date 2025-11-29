@@ -185,9 +185,6 @@ class ::TexdemEvents::EventFetcher
   # Main entry point used by the JSON controller.
   #
   # Now updated to use the official Discourse Calendar plugin's data.
-  # We look for posts that have both:
-  # - A corresponding entry in the discourse_calendar_calendar_events table
-  # - The visibility marker <!-- texdem-visibility: public -->
   def fetch_events
     return [] unless SiteSetting.texdem_events_enabled
 
@@ -250,7 +247,6 @@ class ::TexdemEvents::EventFetcher
   end
 
   # Try to derive a human-readable event title from the post body.
-  # (We still skip [date=...] lines and the **Event Details** header.)
   def extract_event_title_from_raw(raw)
     return nil if raw.blank?
 
@@ -348,8 +344,8 @@ class ::TexdemEvents::EventFetcher
       return nil
     end
 
-    start_time = calendar_event.start   # UTC datetime
-    end_time   = calendar_event.finish  # UTC datetime (nil if none)
+    start_time = calendar_event.start    # UTC datetime
+    end_time   = calendar_event.finish   # UTC datetime (nil if none)
     tz_name    = calendar_event.timezone.presence || SERVER_TIME_ZONE.name
 
     # Pull details from the Event Details block (if present)
@@ -432,62 +428,6 @@ class ::TexdemEvents::EventFetcher
     }
   end
 end
-
-    # Geocode a location string using Nominatim and cache the result.
-    #
-    # Returns [lat, lng] floats, or [nil, nil] if not found.
-    def geocode_location(location)
-      return [nil, nil] if location.blank?
-
-      cache_key = "texdem_events:geocode:#{Digest::SHA1.hexdigest(location)}"
-
-      if (cached = Discourse.cache.read(cache_key))
-        return cached
-      end
-
-      begin
-        uri = URI("https://nominatim.openstreetmap.org/search")
-        params = { q: location, format: "json", limit: 1 }
-        uri.query = URI.encode_www_form(params)
-
-        http = Net::HTTP.new(uri.host, uri.port)
-        http.use_ssl = (uri.scheme == "https")
-        http.read_timeout = 3
-        http.open_timeout = 3
-
-        request = Net::HTTP::Get.new(uri)
-        request["User-Agent"] = "TexDemEventsCore/0.8.0 (forum.texdem.org)"
-
-        response = http.request(request)
-        return [nil, nil] unless response.is_a?(Net::HTTPSuccess)
-
-        json = JSON.parse(response.body)
-        first = json.first
-        return [nil, nil] unless first
-
-        lat = first["lat"].to_f
-        lng = first["lon"].to_f
-
-        # Cache for a week so we don't re-hit the API constantly
-        Discourse.cache.write(cache_key, [lat, lng], expires_in: 7.days)
-
-        [lat, lng]
-      rescue => e
-        Rails.logger.warn(
-          "TexdemEvents: geocode failed for #{location.inspect}: " \
-          "#{e.class} #{e.message}"
-        )
-        [nil, nil]
-      end
-    end
-
-    def rsvp_count_for(topic)
-      ::TexdemEvents::Rsvp.where(topic_id: topic.id).count
-    rescue StandardError
-      # If the model or table isn't ready yet, don't break the JSON endpoint.
-      0
-    end
-  end
 
   #
   # ROUTES
