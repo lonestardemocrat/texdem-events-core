@@ -3,6 +3,7 @@
 # version: 0.8.0
 # authors: TexDem
 # url: https://texdem.org
+# requires_plugin: discourse-calendar
 
 enabled_site_setting :texdem_events_enabled
 
