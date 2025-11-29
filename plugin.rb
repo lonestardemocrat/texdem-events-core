@@ -176,232 +176,214 @@ after_initialize do
     end
   end
 
+#
+# EVENT FETCHER
+#
+class ::TexdemEvents::EventFetcher
+  SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
+
+  # Main entry point used by the JSON controller.
   #
-  # EVENT FETCHER
-  #
-  class ::TexdemEvents::EventFetcher
-    SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
+  # Now updated to use the official Discourse Calendar plugin's data.
+  # We look for posts that have both:
+  # - A corresponding entry in the discourse_calendar_calendar_events table
+  # - The custom tag
+  def fetch_events
+    return [] unless SiteSetting.texdem_events_enabled
 
-    # Main entry point used by the JSON controller.
-    #
-    # We now look at *posts*, not topics:
-    # - Any post that:
-    #   1) lives in one of the configured categories (optional)
-    #   2) contains a [date=...] tag
-    #   3) contains <!-- texdem-visibility: public -->
-    #   4) (optionally) uses the TexDem Event Details block
-    # is treated as a public event.
-    def fetch_events
-      return [] unless SiteSetting.texdem_events_enabled
+    category_ids = parse_category_ids(SiteSetting.texdem_events_category_ids)
 
-      category_ids = parse_category_ids(SiteSetting.texdem_events_category_ids)
+    posts = Post
+      .joins(:topic)
+      # >>> START FIX: JOIN to retrieve only posts with a Discourse Calendar Event
+      .joins("INNER JOIN discourse_calendar_calendar_events dcc ON dcc.post_id = posts.id")
+      # >>> END FIX
+      .where("topics.visible = ? AND topics.deleted_at IS NULL", true)
+      .where("posts.deleted_at IS NULL")
+      .where("posts.raw LIKE '%texdem-visibility: public%'")
 
-      posts = Post
-        .joins(:topic)
-        .where("topics.visible = ? AND topics.deleted_at IS NULL", true)
-        .where("posts.deleted_at IS NULL")
-        .where("posts.raw LIKE '%texdem-visibility: public%'")
-
-      if category_ids.present?
-        posts = posts.where("topics.category_id IN (?)", category_ids)
-      end
-
-      limit = SiteSetting.texdem_events_limit.to_i
-      limit = 100 if limit <= 0
-
-      # Oversample a bit in case some posts are malformed and get filtered out
-      posts = posts.order("posts.created_at DESC").limit(limit * 2)
-
-      events = posts.map { |post| map_post_to_event(post) }.compact
-      events = events.sort_by { |e| e[:start].to_s }
-
-      # Respect the configured limit on the final JSON
-      events.first(limit)
+    if category_ids.present?
+      posts = posts.where("topics.category_id IN (?)", category_ids)
     end
 
-    private
+    limit = SiteSetting.texdem_events_limit.to_i
+    limit = 100 if limit <= 0
 
-    # Parse a comma-separated list of category ids from a site setting.
-    def parse_category_ids(raw)
-      return [] if raw.blank?
-      raw.split(",").map(&:strip).map(&:to_i).reject(&:zero?)
+    # Oversample a bit in case some posts are malformed and get filtered out
+    posts = posts.order("posts.created_at DESC").limit(limit * 2)
+
+    events = posts.map { |post| map_post_to_event(post) }.compact
+    events = events.sort_by { |e| e[:start].to_s }
+
+    # Respect the configured limit on the final JSON
+    events.first(limit)
+  end
+
+  private
+
+  # Parse a comma-separated list of category ids from a site setting.
+  def parse_category_ids(raw)
+    return [] if raw.blank?
+    raw.split(",").map(&:strip).map(&:to_i).reject(&:zero?)
+  end
+
+  # Helper to pull a field from the "Event Details" block in a raw post body.
+  # (No changes needed here)
+  def extract_event_detail_from_raw(raw, label)
+    return nil if raw.blank?
+
+    raw.each_line do |line|
+      # Markdown bullet with bold label
+      if line =~ /\*\*#{Regexp.escape(label)}:\*\*\s*(.+)\s*$/i
+        return $1.strip
+      # Plain "Label: value"
+      elsif line =~ /#{Regexp.escape(label)}:\s*(.+)\s*$/i
+        return $1.strip
+      end
     end
 
-    # Helper to pull a field from the "Event Details" block in a raw post body.
-    #
-    # Matches lines like:
-    #   * **Date:** 2025-12-09
-    #   * **Start time:** 06:00 PM
-    #   * **Address:** 4455 University Dr, Houston, TX 77204
-    #   * **County:** Harris
-    #   * **Location name:** No Label Brewery
-    def extract_event_detail_from_raw(raw, label)
-      return nil if raw.blank?
+    nil
+  end
 
-      raw.each_line do |line|
-        # Markdown bullet with bold label
-        if line =~ /\*\*#{Regexp.escape(label)}:\*\*\s*(.+)\s*$/i
-          return $1.strip
-        # Plain "Label: value"
-        elsif line =~ /#{Regexp.escape(label)}:\s*(.+)\s*$/i
-          return $1.strip
-        end
-      end
+  # Backwards-compatible helper kept for any older callers that still pass a topic.
+  def extract_event_detail(topic, label)
+    raw = topic.first_post&.raw
+    extract_event_detail_from_raw(raw, label)
+  end
 
-      nil
+  # Try to derive a human-readable event title from the post body.
+  # (Updated to remove the [date=...] check)
+  def extract_event_title_from_raw(raw)
+    return nil if raw.blank?
+
+    raw.each_line do |line|
+      line = line.strip
+      next if line.blank?
+      next if line.start_with?("[date=") # Remove check for old tag
+      next if line =~ /^\*\*Event Details\*\*/i
+
+      return line
     end
 
-    # Backwards-compatible helper kept for any older callers that still pass a topic.
-    # New code should prefer extract_event_detail_from_raw with the post raw.
-    def extract_event_detail(topic, label)
-      raw = topic.first_post&.raw
-      extract_event_detail_from_raw(raw, label)
+    nil
+  end
+
+  # Core mapper: convert a single post into an event Hash (or nil if invalid).
+  def map_post_to_event(post)
+    raw = post.raw
+    return nil if raw.blank?
+
+    # Safety: only treat explicitly-public posts as events
+    unless raw.include?("texdem-visibility: public")
+      return nil
     end
 
-    # Try to derive a human-readable event title from the post body.
-    # Strategy:
-    # - take the first non-empty line
-    # - that is not a [date=...] tag
-    # - and not the '**Event Details**' heading
-    # If we can't find one, we fall back to the topic title.
-    def extract_event_title_from_raw(raw)
-      return nil if raw.blank?
+    # ----------------------------------------------------------------------
+    # >>> CRITICAL FIX: Use DiscourseCalendar::CalendarEvent <<<
+    # ----------------------------------------------------------------------
 
-      raw.each_line do |line|
-        line = line.strip
-        next if line.blank?
-        next if line.start_with?("[date=")
-        next if line =~ /^\*\*Event Details\*\*/i
+    # Find the associated calendar event object
+    calendar_event = DiscourseCalendar::CalendarEvent.find_by(post_id: post.id)
 
-        return line
-      end
-
-      nil
+    unless calendar_event
+      # This post should have been filtered out by the JOIN in fetch_events,
+      # but we check again just in case the data is inconsistent.
+      Rails.logger.warn(
+        "TexdemEvents skipped post=#{post.id} topic=#{post.topic_id}: missing Calendar Event"
+      )
+      return nil
     end
 
-    # Core mapper: convert a single post into an event Hash (or nil if invalid).
-    def map_post_to_event(post)
-      raw = post.raw
-      return nil if raw.blank?
+    # Extract the necessary data from the calendar object
+    start_time = calendar_event.start    # UTC datetime object
+    end_time   = calendar_event.finish   # UTC datetime object (nil if not provided)
+    tz_name    = calendar_event.timezone.presence || SERVER_TIME_ZONE.name
 
-      # Safety: only treat explicitly-public posts as events
-      unless raw.include?("texdem-visibility: public")
-        return nil
-      end
+    # ----------------------------------------------------------------------
+    # >>> END CRITICAL FIX <<<
+    # ----------------------------------------------------------------------
 
-      # [date=2025-12-09 time=180000 timezone="America/Chicago"]
-      date_tag_match =
-        raw.match(/\[date=(?<date>\d{4}-\d{2}-\d{2})(?:\s+time=(?<time>\d{6}))?(?:\s+timezone="(?<tz>[^"]+)")?\]/)
 
-      unless date_tag_match
-        Rails.logger.warn(
-          "TexdemEvents skipped post=#{post.id} topic=#{post.topic_id}: missing [date] tag"
-        )
-        return nil
-      end
+    # Pull details from the Event Details block (if present)
+    date_from_body       = extract_event_detail_from_raw(raw, "Date") # Kept for legacy/context
+    start_time_from_body = extract_event_detail_from_raw(raw, "Start time") # Kept for legacy/context
+    county_from_body     = extract_event_detail_from_raw(raw, "County")
+    loc_name_from_body   = extract_event_detail_from_raw(raw, "Location name")
+    address_from_body    = extract_event_detail_from_raw(raw, "Address")
 
-      date_str = date_tag_match[:date]
-      time_raw = date_tag_match[:time] || "000000"
-      tz_name  = date_tag_match[:tz]
+    # County
+    county = county_from_body&.strip
+    county = county.titleize if county.present?
 
-      tz_name ||=
-        if SERVER_TIME_ZONE.respond_to?(:tzinfo)
-          SERVER_TIME_ZONE.tzinfo.name
-        else
-          SERVER_TIME_ZONE.name
-        end
+    # What we want to show in JSON
+    display_location_name = loc_name_from_body.presence
+    display_address       = address_from_body
 
-      hh = time_raw[0, 2]
-      mm = time_raw[2, 2]
-      ss = time_raw[4, 2]
+    # Legacy combined "location" field
+    location =
+      display_address ||
+      display_location_name
 
+    # Geocoding base string
+    geocode_base =
+      display_address ||
+      display_location_name
+
+    lat = nil
+    lng = nil
+
+    if geocode_base.present?
+      Rails.logger.warn(
+        "TexdemEvents geocode: topic=#{post.topic_id} post=#{post.id} title=#{post.topic.title.inspect} " \
+        "geocode_base=#{geocode_base.inspect} county=#{county.inspect}"
+      )
+
+      lat, lng = geocode_location(geocode_base)
+    end
+
+    topic           = post.topic
+    category        = topic.category
+    parent_category = category&.parent_category
+    root            = parent_category || category
+    root_name       = root&.name
+
+    event_title =
+      extract_event_title_from_raw(raw) ||
+      topic.title
+
+    tags =
       begin
-        zone       = ActiveSupport::TimeZone[tz_name] || SERVER_TIME_ZONE
-        start_time = zone.parse("#{date_str} #{hh}:#{mm}:#{ss}")
-      rescue
-        start_time = post.created_at.in_time_zone(SERVER_TIME_ZONE)
+        topic.tags.map(&:name)
+      rescue StandardError
+        []
       end
 
-      # Pull details from the Event Details block (if present)
-      date_from_body       = extract_event_detail_from_raw(raw, "Date")
-      start_time_from_body = extract_event_detail_from_raw(raw, "Start time")
-      county_from_body     = extract_event_detail_from_raw(raw, "County")
-      loc_name_from_body   = extract_event_detail_from_raw(raw, "Location name")
-      address_from_body    = extract_event_detail_from_raw(raw, "Address")
-
-      # County
-      county = county_from_body&.strip
-      county = county.titleize if county.present?
-
-      # What we want to show in JSON
-      display_location_name = loc_name_from_body.presence
-      display_address       = address_from_body
-
-      # Legacy combined "location" field
-      location =
-        display_address ||
-        display_location_name
-
-      # Geocoding base string
-      geocode_base =
-        display_address ||
-        display_location_name
-
-      lat = nil
-      lng = nil
-
-      if geocode_base.present?
-        Rails.logger.warn(
-          "TexdemEvents geocode: topic=#{post.topic_id} post=#{post.id} title=#{post.topic.title.inspect} " \
-          "geocode_base=#{geocode_base.inspect} county=#{county.inspect}"
-        )
-
-        lat, lng = geocode_location(geocode_base)
-      end
-
-      topic           = post.topic
-      category        = topic.category
-      parent_category = category&.parent_category
-      root            = parent_category || category
-      root_name       = root&.name
-
-      event_title =
-        extract_event_title_from_raw(raw) ||
-        topic.title
-
-      tags =
-        begin
-          topic.tags.map(&:name)
-        rescue StandardError
-          []
-        end
-
-      {
-        id:                   "discourse-post-#{post.id}",
-        post_id:              post.id,
-        topic_id:             topic.id,
-        topic_title:          topic.title,
-        category_id:          category&.id,
-        category_name:        category&.name,
-        parent_category_name: parent_category&.name,
-        title:                event_title,
-        start:                start_time&.iso8601,
-        end:                  nil,
-        county:               county,
-        location:             location,             # combined / legacy
-        location_name:        display_location_name,
-        address:              display_address,
-        lat:                  lat,
-        lng:                  lng,
-        root_category:        root_name,
-        url:                  post.full_url,
-        timezone:             tz_name,
-        visibility:           "public",
-        tags:                 tags,
-        rsvp_count:           rsvp_count_for(topic),
-        debug_version:        "texdem-events-v8"
-      }
-    end
+    {
+      id:                   "discourse-post-#{post.id}",
+      post_id:              post.id,
+      topic_id:             topic.id,
+      topic_title:          topic.title,
+      category_id:          category&.id,
+      category_name:        category&.name,
+      parent_category_name: parent_category&.name,
+      title:                event_title,
+      start:                start_time&.iso8601, # Use new start_time
+      end:                  end_time&.iso8601, # Use new end_time
+      county:               county,
+      location:             location,             # combined / legacy
+      location_name:        display_location_name,
+      address:              display_address,
+      lat:                  lat,
+      lng:                  lng,
+      root_category:        root_name,
+      url:                  post.full_url,
+      timezone:             tz_name, # Use new tz_name
+      visibility:           "public",
+      tags:                 tags,
+      rsvp_count:           rsvp_count_for(topic),
+      debug_version:        "texdem-events-v9" # Incrementing version for debug
+    }
+  end
 
     # Geocode a location string using Nominatim and cache the result.
     #
