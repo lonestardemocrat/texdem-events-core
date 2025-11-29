@@ -187,7 +187,7 @@ class ::TexdemEvents::EventFetcher
   # Now updated to use the official Discourse Calendar plugin's data.
   # We look for posts that have both:
   # - A corresponding entry in the discourse_calendar_calendar_events table
-  # - The custom tag
+  # - The visibility marker <!-- texdem-visibility: public -->
   def fetch_events
     return [] unless SiteSetting.texdem_events_enabled
 
@@ -195,9 +195,8 @@ class ::TexdemEvents::EventFetcher
 
     posts = Post
       .joins(:topic)
-      # >>> START FIX: JOIN to retrieve only posts with a Discourse Calendar Event
+      # Only posts that have a calendar event row
       .joins("INNER JOIN discourse_calendar_calendar_events dcc ON dcc.post_id = posts.id")
-      # >>> END FIX
       .where("topics.visible = ? AND topics.deleted_at IS NULL", true)
       .where("posts.deleted_at IS NULL")
       .where("posts.raw LIKE '%texdem-visibility: public%'")
@@ -228,17 +227,16 @@ class ::TexdemEvents::EventFetcher
   end
 
   # Helper to pull a field from the "Event Details" block in a raw post body.
-  # (No changes needed here)
   def extract_event_detail_from_raw(raw, label)
     return nil if raw.blank?
 
     raw.each_line do |line|
       # Markdown bullet with bold label
       if line =~ /\*\*#{Regexp.escape(label)}:\*\*\s*(.+)\s*$/i
-        return $1.strip
+        return Regexp.last_match(1).strip
       # Plain "Label: value"
       elsif line =~ /#{Regexp.escape(label)}:\s*(.+)\s*$/i
-        return $1.strip
+        return Regexp.last_match(1).strip
       end
     end
 
@@ -252,20 +250,75 @@ class ::TexdemEvents::EventFetcher
   end
 
   # Try to derive a human-readable event title from the post body.
-  # (Updated to remove the [date=...] check)
+  # (We still skip [date=...] lines and the **Event Details** header.)
   def extract_event_title_from_raw(raw)
     return nil if raw.blank?
 
     raw.each_line do |line|
       line = line.strip
       next if line.blank?
-      next if line.start_with?("[date=") # Remove check for old tag
+      next if line.start_with?("[date=")
       next if line =~ /^\*\*Event Details\*\*/i
 
       return line
     end
 
     nil
+  end
+
+  # Geocode a location string using Nominatim and cache the result.
+  #
+  # Returns [lat, lng] floats, or [nil, nil] if not found.
+  def geocode_location(location)
+    return [nil, nil] if location.blank?
+
+    cache_key = "texdem_events:geocode:#{Digest::SHA1.hexdigest(location)}"
+
+    if (cached = Discourse.cache.read(cache_key))
+      return cached
+    end
+
+    begin
+      uri = URI("https://nominatim.openstreetmap.org/search")
+      params = { q: location, format: "json", limit: 1 }
+      uri.query = URI.encode_www_form(params)
+
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = (uri.scheme == "https")
+      http.read_timeout = 3
+      http.open_timeout = 3
+
+      request = Net::HTTP::Get.new(uri)
+      request["User-Agent"] = "TexDemEventsCore/0.8.0 (forum.texdem.org)"
+
+      response = http.request(request)
+      return [nil, nil] unless response.is_a?(Net::HTTPSuccess)
+
+      json = JSON.parse(response.body)
+      first = json.first
+      return [nil, nil] unless first
+
+      lat = first["lat"].to_f
+      lng = first["lon"].to_f
+
+      # Cache for a week so we don't re-hit the API constantly
+      Discourse.cache.write(cache_key, [lat, lng], expires_in: 7.days)
+
+      [lat, lng]
+    rescue => e
+      Rails.logger.warn(
+        "TexdemEvents: geocode failed for #{location.inspect}: " \
+        "#{e.class} #{e.message}"
+      )
+      [nil, nil]
+    end
+  end
+
+  def rsvp_count_for(topic)
+    ::TexdemEvents::Rsvp.where(topic_id: topic.id).count
+  rescue StandardError
+    # If the model or table isn't ready yet, don't break the JSON endpoint.
+    0
   end
 
   # Core mapper: convert a single post into an event Hash (or nil if invalid).
@@ -278,11 +331,12 @@ class ::TexdemEvents::EventFetcher
       return nil
     end
 
-    # ----------------------------------------------------------------------
-    # >>> CRITICAL FIX: Use DiscourseCalendar::CalendarEvent <<<
-    # ----------------------------------------------------------------------
+    topic = post.topic
+    return nil if topic.blank?
 
-    # Find the associated calendar event object
+    # ----------------------------------------------------------------------
+    # Use DiscourseCalendar::CalendarEvent for real timestamps + timezone
+    # ----------------------------------------------------------------------
     calendar_event = DiscourseCalendar::CalendarEvent.find_by(post_id: post.id)
 
     unless calendar_event
@@ -294,19 +348,13 @@ class ::TexdemEvents::EventFetcher
       return nil
     end
 
-    # Extract the necessary data from the calendar object
-    start_time = calendar_event.start    # UTC datetime object
-    end_time   = calendar_event.finish   # UTC datetime object (nil if not provided)
+    start_time = calendar_event.start   # UTC datetime
+    end_time   = calendar_event.finish  # UTC datetime (nil if none)
     tz_name    = calendar_event.timezone.presence || SERVER_TIME_ZONE.name
 
-    # ----------------------------------------------------------------------
-    # >>> END CRITICAL FIX <<<
-    # ----------------------------------------------------------------------
-
-
     # Pull details from the Event Details block (if present)
-    date_from_body       = extract_event_detail_from_raw(raw, "Date") # Kept for legacy/context
-    start_time_from_body = extract_event_detail_from_raw(raw, "Start time") # Kept for legacy/context
+    date_from_body       = extract_event_detail_from_raw(raw, "Date")        # legacy/context
+    start_time_from_body = extract_event_detail_from_raw(raw, "Start time") # legacy/context
     county_from_body     = extract_event_detail_from_raw(raw, "County")
     loc_name_from_body   = extract_event_detail_from_raw(raw, "Location name")
     address_from_body    = extract_event_detail_from_raw(raw, "Address")
@@ -334,14 +382,13 @@ class ::TexdemEvents::EventFetcher
 
     if geocode_base.present?
       Rails.logger.warn(
-        "TexdemEvents geocode: topic=#{post.topic_id} post=#{post.id} title=#{post.topic.title.inspect} " \
+        "TexdemEvents geocode: topic=#{post.topic_id} post=#{post.id} title=#{topic.title.inspect} " \
         "geocode_base=#{geocode_base.inspect} county=#{county.inspect}"
       )
 
       lat, lng = geocode_location(geocode_base)
     end
 
-    topic           = post.topic
     category        = topic.category
     parent_category = category&.parent_category
     root            = parent_category || category
@@ -367,8 +414,8 @@ class ::TexdemEvents::EventFetcher
       category_name:        category&.name,
       parent_category_name: parent_category&.name,
       title:                event_title,
-      start:                start_time&.iso8601, # Use new start_time
-      end:                  end_time&.iso8601, # Use new end_time
+      start:                start_time&.iso8601,
+      end:                  end_time&.iso8601,
       county:               county,
       location:             location,             # combined / legacy
       location_name:        display_location_name,
@@ -377,13 +424,14 @@ class ::TexdemEvents::EventFetcher
       lng:                  lng,
       root_category:        root_name,
       url:                  post.full_url,
-      timezone:             tz_name, # Use new tz_name
+      timezone:             tz_name,
       visibility:           "public",
       tags:                 tags,
       rsvp_count:           rsvp_count_for(topic),
-      debug_version:        "texdem-events-v9" # Incrementing version for debug
+      debug_version:        "texdem-events-v9"
     }
   end
+end
 
     # Geocode a location string using Nominatim and cache the result.
     #
