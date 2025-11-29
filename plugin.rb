@@ -4,14 +4,14 @@
 # authors: TexDem
 # url: https://texdem.org
 
-require 'net/http'
-require 'uri'
-require 'json'
-require 'digest/sha1'
-
 enabled_site_setting :texdem_events_enabled
 
 after_initialize do
+  require 'net/http'
+  require 'uri'
+  require 'json'
+  require 'digest/sha1'
+
   #
   # NAMESPACE
   #
@@ -19,14 +19,14 @@ after_initialize do
   end
 
   #
-  # RSVP MODEL (For RSVP submission + stats)
+  # RSVP MODEL
   #
   class ::TexdemEvents::Rsvp < ActiveRecord::Base
     self.table_name = "texdem_event_rsvps"
 
     belongs_to :topic
 
-    validates :topic_id,    presence: true
+    validates :topic_id,   presence: true
     validates :first_name, presence: true
     validates :last_name,  presence: true
     validates :email,      presence: true
@@ -41,7 +41,7 @@ after_initialize do
   #
   ::ApplicationController.class_eval do
     before_action :texdem_events_cors_headers,
-      if: -> { request.path&.start_with?("/texdem-events") }
+                  if: -> { request.path&.start_with?("/texdem-events") }
 
     private
 
@@ -84,7 +84,7 @@ after_initialize do
 
     skip_before_action :check_xhr
     skip_before_action :redirect_to_login_if_required
-    skip_before_action :verify_authenticity_token   # allow external POST
+    skip_before_action :verify_authenticity_token  # allow external POST
 
     #
     # OPTIONS /texdem-events/:topic_id/rsvp
@@ -183,6 +183,10 @@ after_initialize do
     SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
 
     # Main entry point used by the JSON controller.
+    #
+    # Uses the official Discourse Calendar plugin:
+    # - Only posts that have a row in discourse_calendar_calendar_events
+    # - Only posts that contain <!-- texdem-visibility: public -->
     def fetch_events
       return [] unless SiteSetting.texdem_events_enabled
 
@@ -449,19 +453,19 @@ after_initialize do
   Discourse::Application.routes.append do
     # GET /texdem-events.json
     get  "/texdem-events" => "texdem_events/events#index",
-      defaults: { format: :json }
+         defaults: { format: :json }
 
     # GET /texdem-events/:topic_id/rsvp (stats)
     get  "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#show",
-      defaults: { format: :json }
+         defaults: { format: :json }
 
     # POST /texdem-events/:topic_id/rsvp (create)
     post "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#create",
-      defaults: { format: :json }
+         defaults: { format: :json }
 
     # OPTIONS /texdem-events/:topic_id/rsvp (CORS preflight)
     match "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#options",
-      via: [:options],
-      defaults: { format: :json }
+          via: [:options],
+          defaults: { format: :json }
   end
 end
