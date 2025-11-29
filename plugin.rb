@@ -1,182 +1,3 @@
-# name: texdem-events-core
-# about: Minimal backend-only JSON endpoint for TexDem events, based on calendar posts + visibility marker.
-# version: 0.9.0
-# authors: TexDem
-# url: https://texdem.org
-
-require 'net/http'
-require 'uri'
-require 'json'
-require 'digest/sha1'
-require 'discourse_calendar/calendar_event'
-
-enabled_site_setting :texdem_events_enabled
-
-after_initialize do
-  #
-  # NAMESPACE
-  #
-  module ::TexdemEvents
-  end
-
-  #
-  # RSVP MODEL
-  #
-  class ::TexdemEvents::Rsvp < ActiveRecord::Base
-    self.table_name = "texdem_event_rsvps"
-
-    belongs_to :topic
-
-    validates :topic_id,   presence: true
-    validates :first_name, presence: true
-    validates :last_name,  presence: true
-    validates :email,      presence: true
-
-    validates :guests,
-      numericality: { only_integer: true, greater_than_or_equal_to: 0 },
-      allow_nil: true
-  end
-
-  #
-  # GLOBAL CORS FOR /texdem-events*
-  #
-  ::ApplicationController.class_eval do
-    before_action :texdem_events_cors_headers,
-                  if: -> { request.path&.start_with?("/texdem-events") }
-
-    private
-
-    def texdem_events_cors_headers
-      # Allow texdem.org (and www) to call these endpoints from the browser
-      origin = request.headers['Origin']
-      allowed = ["https://texdem.org", "https://www.texdem.org"]
-
-      if origin.present? && allowed.include?(origin)
-        response.headers['Access-Control-Allow-Origin'] = origin
-      end
-
-      response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-      response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-    end
-  end
-
-  #
-  # EVENTS JSON CONTROLLER
-  #
-  class ::TexdemEvents::EventsController < ::ApplicationController
-    requires_plugin 'texdem-events-core'
-
-    skip_before_action :check_xhr
-    skip_before_action :redirect_to_login_if_required
-
-    def index
-      raise Discourse::NotFound unless SiteSetting.texdem_events_enabled
-
-      events = ::TexdemEvents::EventFetcher.new.fetch_events
-      render_json_dump(events)
-    end
-  end
-
-  #
-  # RSVP SUBMISSION + STATS CONTROLLER
-  #
-  class ::TexdemEvents::RsvpsController < ::ApplicationController
-    requires_plugin 'texdem-events-core'
-
-    skip_before_action :check_xhr
-    skip_before_action :redirect_to_login_if_required
-    skip_before_action :verify_authenticity_token  # allow external POST
-
-    #
-    # OPTIONS /texdem-events/:topic_id/rsvp
-    # CORS preflight
-    #
-    def options
-      head :no_content
-    end
-
-    #
-    # GET /texdem-events/:topic_id/rsvp
-    # Returns aggregated RSVP stats for a topic.
-    #
-    def show
-      topic_id = params[:topic_id].to_i
-      topic    = Topic.find_by(id: topic_id)
-
-      return render_json_error("Invalid topic") if topic.nil?
-
-      rsvps = ::TexdemEvents::Rsvp.where(topic_id: topic_id)
-
-      rsvp_count  = rsvps.count
-      guest_count = rsvps.sum("COALESCE(guests, 0)")
-
-      render json: {
-        success: true,
-        topic_id: topic_id,
-        rsvp_count: rsvp_count,
-        guest_count: guest_count
-      }
-    end
-
-    #
-    # POST /texdem-events/:topic_id/rsvp
-    # Create a new RSVP row for an event.
-    #
-    def create
-      topic_id = params[:topic_id].to_i
-      topic    = Topic.find_by(id: topic_id)
-
-      return render_json_error("Invalid topic") if topic.nil?
-
-      # Required fields
-      first = params[:first_name]&.strip
-      last  = params[:last_name]&.strip
-      email = params[:email]&.strip
-
-      unless first.present? && last.present? && email.present?
-        return render_json_error("Missing required fields")
-      end
-
-      guests_param = params[:guests]
-      guests_value =
-        if guests_param.present?
-          begin
-            Integer(guests_param)
-          rescue ArgumentError
-            return render_json_error("Guests must be an integer")
-          end
-        else
-          nil
-        end
-
-      rsvp = ::TexdemEvents::Rsvp.new(
-        topic_id:   topic_id,
-        first_name: first,
-        last_name:  last,
-        email:      email,
-        phone:      params[:phone],
-        address:    params[:address],
-        guests:     guests_value
-      )
-
-      if rsvp.save
-        render json: {
-          success: true,
-          message: "RSVP recorded",
-          rsvp_count: ::TexdemEvents::Rsvp.where(topic_id: topic_id).count
-        }
-      else
-        render_json_error(rsvp.errors.full_messages.join(", "))
-      end
-    end
-
-    private
-
-    def render_json_error(msg)
-      render json: { success: false, error: msg }, status: 422
-    end
-  end
-
   #
   # EVENT FETCHER
   #
@@ -191,17 +12,34 @@ after_initialize do
     def fetch_events
       return [] unless SiteSetting.texdem_events_enabled
 
+      # If the calendar plugin/constant isn't available, fail gracefully
+      unless defined?(DiscourseCalendar) && defined?(DiscourseCalendar::CalendarEvent)
+        Rails.logger.warn(
+          "TexdemEvents: DiscourseCalendar::CalendarEvent not available; returning []."
+        )
+        return []
+      end
+
       category_ids = parse_category_ids(SiteSetting.texdem_events_category_ids)
 
-      posts = Post
-        .joins(:topic)
-        .joins("INNER JOIN discourse_calendar_calendar_events dcc ON dcc.post_id = posts.id")
-        .where("topics.visible = ? AND topics.deleted_at IS NULL", true)
-        .where("posts.deleted_at IS NULL")
-        .where("posts.raw LIKE '%texdem-visibility: public%'")
+      begin
+        posts = Post
+          .joins(:topic)
+          .joins("INNER JOIN discourse_calendar_calendar_events dcc ON dcc.post_id = posts.id")
+          .where("topics.visible = ? AND topics.deleted_at IS NULL", true)
+          .where("posts.deleted_at IS NULL")
+          .where("posts.raw LIKE '%texdem-visibility: public%'")
 
-      if category_ids.present?
-        posts = posts.where("topics.category_id IN (?)", category_ids)
+        if category_ids.present?
+          posts = posts.where("topics.category_id IN (?)", category_ids)
+        end
+      rescue ActiveRecord::StatementInvalid => e
+        # e.g. if discourse_calendar_calendar_events table is missing
+        Rails.logger.warn(
+          "TexdemEvents: calendar join failed (likely missing table): " \
+          "#{e.class} #{e.message}"
+        )
+        return []
       end
 
       limit = SiteSetting.texdem_events_limit.to_i
@@ -333,12 +171,15 @@ after_initialize do
       topic = post.topic
       return nil if topic.blank?
 
+      # If calendar plugin/constant isn't available, bail on this post
+      unless defined?(DiscourseCalendar) && defined?(DiscourseCalendar::CalendarEvent)
+        return nil
+      end
+
       # Use DiscourseCalendar::CalendarEvent for real timestamps + timezone
       calendar_event = DiscourseCalendar::CalendarEvent.find_by(post_id: post.id)
 
       unless calendar_event
-        # Should have been filtered out by JOIN in fetch_events,
-        # but we check again in case data is inconsistent.
         Rails.logger.warn(
           "TexdemEvents skipped post=#{post.id} topic=#{post.topic_id}: missing Calendar Event"
         )
@@ -350,11 +191,9 @@ after_initialize do
       tz_name    = calendar_event.timezone.presence || SERVER_TIME_ZONE.name
 
       # Pull details from the Event Details block (if present)
-      date_from_body       = extract_event_detail_from_raw(raw, "Date")        # legacy/context
-      start_time_from_body = extract_event_detail_from_raw(raw, "Start time")  # legacy/context
-      county_from_body     = extract_event_detail_from_raw(raw, "County")
-      loc_name_from_body   = extract_event_detail_from_raw(raw, "Location name")
-      address_from_body    = extract_event_detail_from_raw(raw, "Address")
+      county_from_body   = extract_event_detail_from_raw(raw, "County")
+      loc_name_from_body = extract_event_detail_from_raw(raw, "Location name")
+      address_from_body  = extract_event_detail_from_raw(raw, "Address")
 
       # County
       county = county_from_body&.strip
@@ -425,30 +264,7 @@ after_initialize do
         visibility:           "public",
         tags:                 tags,
         rsvp_count:           rsvp_count_for(topic),
-        debug_version:        "texdem-events-v9"
+        debug_version:        "texdem-events-v10"
       }
     end
   end
-
-  #
-  # ROUTES
-  #
-  Discourse::Application.routes.append do
-    # GET /texdem-events.json
-    get  "/texdem-events" => "texdem_events/events#index",
-         defaults: { format: :json }
-
-    # GET /texdem-events/:topic_id/rsvp (stats)
-    get  "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#show",
-         defaults: { format: :json }
-
-    # POST /texdem-events/:topic_id/rsvp (create)
-    post "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#create",
-         defaults: { format: :json }
-
-    # OPTIONS /texdem-events/:topic_id/rsvp (CORS preflight)
-    match "/texdem-events/:topic_id/rsvp" => "texdem_events/rsvps#options",
-          via: [:options],
-          defaults: { format: :json }
-  end
-end
