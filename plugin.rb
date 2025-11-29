@@ -8,6 +8,7 @@ require 'net/http'
 require 'uri'
 require 'json'
 require 'digest/sha1'
+require 'discourse_calendar/calendar_event'
 
 enabled_site_setting :texdem_events_enabled
 
