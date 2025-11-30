@@ -187,7 +187,7 @@ after_initialize do
     #
     # Uses the official Discourse Calendar plugin:
     # - Only posts that have a row in discourse_calendar_calendar_events
-    # - Only posts that contain <!-- texdem-visibility: public -->
+    # - Only posts that contain "Visibility: public" in the Event Details block
     def fetch_events
       return [] unless SiteSetting.texdem_events_enabled
 
@@ -207,7 +207,8 @@ after_initialize do
           .joins("INNER JOIN discourse_calendar_calendar_events dcc ON dcc.post_id = posts.id")
           .where("topics.visible = ? AND topics.deleted_at IS NULL", true)
           .where("posts.deleted_at IS NULL")
-          .where("posts.raw LIKE '%texdem-visibility: public%'")
+          .where("posts.raw LIKE '%Visibility: public%'")
+
 
         if category_ids.present?
           posts = posts.where("topics.category_id IN (?)", category_ids)
