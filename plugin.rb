@@ -337,15 +337,10 @@ after_initialize do
       0
     end
 
-    # Core mapper: convert a single post into an event Hash (or nil if invalid).
+        # Core mapper: convert a single post into an event Hash (or nil if invalid).
     def map_post_to_event(post)
       raw = post.raw
       return nil if raw.blank?
-
-      # Safety: only treat explicitly-public posts as events
-      unless raw.include?("texdem-visibility: public")
-        return nil
-      end
 
       topic = post.topic
       return nil if topic.blank?
@@ -370,28 +365,30 @@ after_initialize do
       tz_name    = calendar_event.timezone.presence || SERVER_TIME_ZONE.name
 
       # Pull details from the Event Details block (if present)
-      county_from_body   = extract_event_detail_from_raw(raw, "County")
-      loc_name_from_body = extract_event_detail_from_raw(raw, "Location name")
-      address_from_body  = extract_event_detail_from_raw(raw, "Address")
+      county_from_body      = extract_event_detail_from_raw(raw, "County")
+      loc_name_from_body    = extract_event_detail_from_raw(raw, "Location name")
+      address_from_body     = extract_event_detail_from_raw(raw, "Address")
       visibility_from_field = extract_event_detail_from_raw(raw, "Visibility")
+      summary_from_body     = extract_event_detail_from_raw(raw, "Summary")
+      url_from_body         = extract_event_detail_from_raw(raw, "URL")
+      graphic_from_body     = extract_event_detail_from_raw(raw, "Graphic")
+      rsvp_setting_from_body = extract_event_detail_from_raw(raw, "RSVP")
 
+      # Visibility gate: only treat explicitly public events as JSON events
+      visible_value = visibility_from_field&.strip&.downcase
+      return nil unless visible_value == "public"
 
       # County
       county = county_from_body&.strip
       county = county.titleize if county.present?
 
       # What we want to show in JSON
-      display_location_name = loc_name_from_body.presence
-      display_address       = address_from_body
+      display_location_name = loc_name_from_body&.strip
+      display_address       = address_from_body&.strip
 
-      # Legacy combined "location" field
-      location =
-        display_address ||
-        display_location_name
-
-      # Geocoding base string
+      # Geocoding base string – prefer address when present
       geocode_base =
-        display_address ||
+        display_address.presence ||
         display_location_name
 
       lat = nil
@@ -411,6 +408,7 @@ after_initialize do
       root            = parent_category || category
       root_name       = root&.name
 
+      # Single canonical event title: first content line after [date], etc.
       event_title =
         extract_event_title_from_raw(raw) ||
         topic.title
@@ -420,6 +418,21 @@ after_initialize do
           topic.tags.map(&:name)
         rescue StandardError
           []
+        end
+
+      # Summary: capped at 250 characters to keep it frontend-safe
+      summary =
+        if summary_from_body.present?
+          summary_from_body[0, 250]
+        end
+
+      # RSVP toggle
+      rsvp_enabled =
+        case rsvp_setting_from_body&.strip&.downcase
+        when "enabled", "yes", "true"
+          true
+        else
+          false
         end
 
       {
@@ -434,7 +447,6 @@ after_initialize do
         start:                start_time&.iso8601,
         end:                  end_time&.iso8601,
         county:               county,
-        location:             location,             # combined / legacy
         location_name:        display_location_name,
         address:              display_address,
         lat:                  lat,
@@ -442,10 +454,16 @@ after_initialize do
         root_category:        root_name,
         url:                  post.full_url,
         timezone:             tz_name,
-        visibility:           "public",
+        visibility:           visible_value,
         tags:                 tags,
         rsvp_count:           rsvp_count_for(topic),
-        debug_version:        "texdem-events-v10"
+
+        summary:              summary,
+        external_url:         url_from_body&.strip,
+        graphic_url:          graphic_from_body&.strip,
+        rsvp_enabled:         rsvp_enabled,
+
+        debug_version:        "texdem-events-v12"
       }
     end
   end
