@@ -1,102 +1,39 @@
-{{#d-modal-body title="TexDem Event"}}
-  <div class="texdem-event-modal-body">
-    <div class="texdem-event-row">
-      <label>{{i18n "texdem.event.date"}}</label>
-      {{input
-        type="text"
-        value=this.date
-        placeholder="YYYY-MM-DD"
-        class="texdem-event-input"
-      }}
-    </div>
+<div class="texdem-event-modal">
+  <h2 class="texdem-event-title">Create TexDem Event</h2>
 
-    <div class="texdem-event-row">
-      <label>{{i18n "texdem.event.start_time"}}</label>
-      {{input
-        type="text"
-        value=this.startTime
-        placeholder="6:00 PM or 18:00"
-        class="texdem-event-input"
-      }}
-    </div>
-
-    <div class="texdem-event-row">
-      <label>{{i18n "texdem.event.timezone"}}</label>
-      {{input
-        type="text"
-        value=this.timezone
-        class="texdem-event-input"
-      }}
-      <div class="texdem-hint">
-        e.g. <code>America/Chicago</code>
-      </div>
-    </div>
-
-    <hr>
-
-    <div class="texdem-event-row">
-      <label>{{i18n "texdem.event.location_name"}}</label>
-      {{input
-        type="text"
-        value=this.locationName
-        placeholder="No Label Brewery"
-        class="texdem-event-input"
-      }}
-    </div>
-
-    <div class="texdem-event-row">
-      <label>{{i18n "texdem.event.address"}}</label>
-      {{input
-        type="text"
-        value=this.address
-        placeholder="5351 1st St, Katy, TX 77493"
-        class="texdem-event-input"
-      }}
-    </div>
-
-    <div class="texdem-event-row">
-      <label>{{i18n "texdem.event.county"}}</label>
-      {{input
-        type="text"
-        value=this.county
-        placeholder="Harris"
-        class="texdem-event-input"
-      }}
-    </div>
-
-    <div class="texdem-event-row">
-      <label>{{i18n "texdem.event.rsvp_url"}}</label>
-      {{input
-        type="text"
-        value=this.rsvpUrl
-        placeholder="https://example.com/rsvp"
-        class="texdem-event-input"
-      }}
-      <div class="texdem-hint">
-        (Optional. Just text in the post for now; TEC can ignore/use later.)
-      </div>
-    </div>
-
-    <div class="texdem-event-row texdem-event-public-row">
-      <label>
-        {{input
-          type="checkbox"
-          checked=this.isPublic
-        }}
-        {{i18n "texdem.event.public_label"}}
-      </label>
-      <div class="texdem-hint">
-        Public events appear on texdem.org; private ones stay internal.
-      </div>
-    </div>
+  <div class="input-group">
+    <label>Event Title</label>
+    {{input value=this.title class="ember-text-field"}}
   </div>
-{{/d-modal-body}}
 
-<div class="modal-footer">
-  {{d-button
-    action="insert"
-    class="btn-primary"
-    label="texdem.event.insert"
-  }}
-  {{d-modal-cancel}}
+  <div class="input-group">
+    <label>Start Date</label>
+    {{date-input date=this.startDate}}
+  </div>
+
+  <div class="input-group">
+    <label>Start Time</label>
+    {{time-input value=this.startTime}}
+  </div>
+
+  <div class="input-group">
+    <label>Timezone</label>
+    {{combo-box
+      content=this.timezones
+      value=this.timezone
+      none="America/Chicago"
+    }}
+  </div>
+
+  <div class="modal-footer">
+    <DButton
+      @action={{this.insertEvent}}
+      @label="Insert Event"
+      class="btn-primary"
+    />
+    <DButton
+      @action={{this.close}}
+      @label="Cancel"
+    />
+  </div>
 </div>
