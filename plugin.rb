@@ -1,6 +1,6 @@
 # name: texdem-events-core
 # about: Minimal backend-only JSON endpoint for TexDem events, based on selected Discourse categories.
-# version: 0.11.0
+# version: 0.11.1
 # authors: TexDem
 # url: https://texdem.org
 # requires_plugin: discourse-calendar
@@ -84,18 +84,12 @@ after_initialize do
 
     skip_before_action :check_xhr
     skip_before_action :redirect_to_login_if_required
-    skip_before_action :verify_authenticity_token  # allow external POST
+    skip_before_action :verify_authenticity_token
 
-    #
-    # OPTIONS /texdem-events/:topic_id/rsvp
-    #
     def options
       head :no_content
     end
 
-    #
-    # GET /texdem-events/:topic_id/rsvp
-    #
     def show
       topic_id = params[:topic_id].to_i
       topic    = Topic.find_by(id: topic_id)
@@ -104,24 +98,17 @@ after_initialize do
 
       rsvps = ::TexdemEvents::Rsvp.where(topic_id: topic_id)
 
-      rsvp_count  = rsvps.count
-      guest_count = rsvps.sum("COALESCE(guests, 0)")
-
       render json: {
         success: true,
         topic_id: topic_id,
-        rsvp_count: rsvp_count,
-        guest_count: guest_count
+        rsvp_count: rsvps.count,
+        guest_count: rsvps.sum("COALESCE(guests, 0)")
       }
     end
 
-    #
-    # POST /texdem-events/:topic_id/rsvp
-    #
     def create
       topic_id = params[:topic_id].to_i
       topic    = Topic.find_by(id: topic_id)
-
       return render_json_error("Invalid topic") if topic.nil?
 
       first = params[:first_name]&.strip
@@ -173,7 +160,7 @@ after_initialize do
   end
 
   #
-  # EVENT FETCHER 0.11.0 (SUPER-PERMISSIVE DEBUG VERSION)
+  # EVENT FETCHER 0.11.1 (Visibility-filtered)
   #
   class ::TexdemEvents::EventFetcher
     SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
@@ -184,7 +171,6 @@ after_initialize do
       limit = SiteSetting.texdem_events_limit.to_i
       limit = 100 if limit <= 0
 
-      # 🔓 Debug: NO category / tag / visibility / calendar table restrictions.
       posts = Post
         .joins(:topic)
         .where("topics.visible = ? AND topics.deleted_at IS NULL", true)
@@ -194,25 +180,22 @@ after_initialize do
 
       events = posts.map { |post| map_post_to_event(post) }.compact
       events = events.sort_by { |e| e[:start].to_s }
-
       events.first(limit)
     end
 
     private
 
     #
-    # Generic label extractor from raw (Markdown or plain)
+    # Label extractors from raw
     #
     def extract_event_detail_from_raw(raw, label)
       return nil if raw.blank?
 
       raw.each_line do |line|
-        # Bold label: **Label:** value
         if line =~ /\*\*#{Regexp.escape(label)}:\*\*\s*(.+)\s*$/i
           return Regexp.last_match(1).strip
         end
 
-        # Plain: Label: value
         if line =~ /#{Regexp.escape(label)}:\s*(.+)\s*$/i
           return Regexp.last_match(1).strip
         end
@@ -227,7 +210,7 @@ after_initialize do
       raw.each_line do |line|
         line = line.strip
         next if line.blank?
-        next if line.start_with?("[date") # [date=...] or [date-range ...]
+        next if line.start_with?("[date")
         next if line =~ /^\*\*Event Details\*\*/i
 
         return line
@@ -237,7 +220,7 @@ after_initialize do
     end
 
     #
-    # Date/time parsing helpers
+    # Date parsing helpers
     #
     def parse_datetime_with_zone(str, tz_name)
       return nil if str.blank?
@@ -250,7 +233,6 @@ after_initialize do
     def parse_times_from_raw(raw, post)
       tz_name = SERVER_TIME_ZONE.name
 
-      # 1) [date-range from=2025-12-11T17:00:00 to=2025-12-11T18:00:00 timezone="America/Chicago"]
       if raw =~ /\[date-range\s+from=(?<from>[^\s\]]+)\s+to=(?<to>[^\s\]]+)(?:\s+timezone="(?<tz>[^"]+)")?/i
         from_str = Regexp.last_match(:from)
         to_str   = Regexp.last_match(:to)
@@ -265,7 +247,6 @@ after_initialize do
         return [start_time, end_time, tz_name]
       end
 
-      # 2) [date=YYYY-MM-DD time=HHMMSS timezone="America/Chicago"]
       if raw =~ /\[date=(?<date>\d{4}-\d{2}-\d{2})(?:\s+time=(?<time>\d{6}))?(?:\s+timezone="(?<tz>[^"]+)")?\]/i
         date_str = Regexp.last_match(:date)
         time_raw = Regexp.last_match(:time) || "000000"
@@ -283,7 +264,6 @@ after_initialize do
         return [start_time, end_time, tz_name]
       end
 
-      # 3) Fallback: use created_at if no calendar markup found
       start_time = post.created_at.in_time_zone(SERVER_TIME_ZONE)
       end_time   = start_time + 1.hour
 
@@ -313,7 +293,7 @@ after_initialize do
         http.open_timeout = 3
 
         request = Net::HTTP::Get.new(uri)
-        request["User-Agent"] = "TexDemEventsCore/0.11.0 (forum.texdem.org)"
+        request["User-Agent"] = "TexDemEventsCore/0.11.1 (forum.texdem.org)"
 
         response = http.request(request)
         return [nil, nil] unless response.is_a?(Net::HTTPSuccess)
@@ -329,8 +309,7 @@ after_initialize do
         [lat, lng]
       rescue => e
         Rails.logger.warn(
-          "TexdemEvents: geocode failed for #{location.inspect}: " \
-          "#{e.class} #{e.message}"
+          "TexdemEvents: geocode failed for #{location.inspect}: #{e.class} #{e.message}"
         )
         [nil, nil]
       end
@@ -343,11 +322,19 @@ after_initialize do
     end
 
     #
-    # Core mapper: VERY PERMISSIVE.
+    # CORE MAPPER (with Visibility filter)
     #
     def map_post_to_event(post)
       raw = post.raw
       return nil if raw.blank?
+
+      # ------------------------------------------------------------------
+      # NEW FILTER: Only include posts explicitly marked as public events
+      # ------------------------------------------------------------------
+      unless raw.match?(/visibility:\s*public/i)
+        return nil
+      end
+      # ------------------------------------------------------------------
 
       topic = post.topic
       return nil if topic.blank?
@@ -355,14 +342,12 @@ after_initialize do
       start_time, end_time, tz_name = parse_times_from_raw(raw, post)
 
       county_from_body   = extract_event_detail_from_raw(raw, "County")
-      loc_name_from_body =
-        extract_event_detail_from_raw(raw, "Location") ||
-        extract_event_detail_from_raw(raw, "Location name")
+      loc_name_from_body = extract_event_detail_from_raw(raw, "Location") ||
+                           extract_event_detail_from_raw(raw, "Location name")
       address_from_body  = extract_event_detail_from_raw(raw, "Address")
       summary_from_body  = extract_event_detail_from_raw(raw, "Summary")
-      url_from_body      =
-        extract_event_detail_from_raw(raw, "RSVP / More info") ||
-        extract_event_detail_from_raw(raw, "URL")
+      url_from_body      = extract_event_detail_from_raw(raw, "RSVP / More info") ||
+                           extract_event_detail_from_raw(raw, "URL")
       graphic_from_body  = extract_event_detail_from_raw(raw, "Graphic")
 
       county = county_from_body&.strip
@@ -425,14 +410,14 @@ after_initialize do
         root_category:        root_name,
         url:                  post.full_url,
         timezone:             tz_name,
-        visibility:           "debug-all",
+        visibility:           "public",
         tags:                 tags,
         rsvp_count:           rsvp_count_for(topic),
         summary:              summary,
         external_url:         url_from_body&.strip,
         graphic_url:          graphic_from_body&.strip,
         rsvp_enabled:         false,
-        debug_version:        "texdem-events-v0.11.0"
+        debug_version:        "texdem-events-v0.11.1"
       }
     end
   end
