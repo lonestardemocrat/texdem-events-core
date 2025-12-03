@@ -294,14 +294,21 @@ after_initialize do
 
         http = Net::HTTP.new(uri.host, uri.port)
         http.use_ssl = (uri.scheme == "https")
-        http.read_timeout = 3
-        http.open_timeout = 3
+        http.read_timeout = 8
+        http.open_timeout = 8
 
         request = Net::HTTP::Get.new(uri)
         request["User-Agent"] = "TexDemEventsCore/0.11.3 (forum.texdem.org)"
 
         response = http.request(request)
-        return [nil, nil] unless response.is_a?(Net::HTTPSuccess)
+        
+    # Log non-success responses
+    unless response.is_a?(Net::HTTPSuccess)
+      Rails.logger.warn(
+        "TexdemEvents: geocode HTTP #{response.code} for #{location.inspect}"
+      )
+      return [nil, nil]
+    end
 
         json  = JSON.parse(response.body)
         first = json.first
