@@ -275,8 +275,8 @@ after_initialize do
       [start_time, end_time, tz_name]
     end
 
-    #
-    # Geocoding
+       #
+    # Geocoding (Google first, Nominatim fallback)
     #
     def geocode_location(location)
       return [nil, nil] if location.blank?
@@ -287,51 +287,122 @@ after_initialize do
         return cached
       end
 
+      lat = nil
+      lng = nil
+
+      # 1. Try Google Geocoding API first (if key is present)
+      google_key = SiteSetting.try(:texdem_google_maps_api_key)
+      if google_key.present?
+        lat, lng = geocode_with_google(location, google_key)
+
+        if lat && lng
+          Discourse.cache.write(cache_key, [lat, lng], expires_in: 7.days)
+          return [lat, lng]
+        end
+      end
+
+      # 2. Fallback to Nominatim if Google failed or no key
+      lat, lng = geocode_with_nominatim(location)
+
+      if lat && lng
+        Discourse.cache.write(cache_key, [lat, lng], expires_in: 7.days)
+        return [lat, lng]
+      end
+
+      [nil, nil]
+    end
+
+    def geocode_with_google(location, api_key)
+      begin
+        uri = URI("https://maps.googleapis.com/maps/api/geocode/json")
+        params = {
+          address: location,
+          key: api_key
+        }
+        uri.query = URI.encode_www_form(params)
+
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl = true
+        http.read_timeout = 8
+        http.open_timeout = 8
+
+        request = Net::HTTP::Get.new(uri)
+        request["User-Agent"] = "TexDemEventsCore/0.11.3 (forum.texdem.org)"
+
+        response = http.request(request)
+
+        unless response.is_a?(Net::HTTPSuccess)
+          Rails.logger.warn(
+            "TexdemEvents: Google geocode HTTP #{response.code} for #{location.inspect}"
+          )
+          return [nil, nil]
+        end
+
+        json = JSON.parse(response.body)
+        status = json["status"]
+
+        if status != "OK"
+          Rails.logger.warn(
+            "TexdemEvents: Google geocode status=#{status.inspect} for #{location.inspect}"
+          )
+          return [nil, nil]
+        end
+
+        first_result = json["results"]&.first
+        unless first_result && first_result["geometry"] && first_result["geometry"]["location"]
+          Rails.logger.warn(
+            "TexdemEvents: Google geocode missing geometry for #{location.inspect}"
+          )
+          return [nil, nil]
+        end
+
+        loc = first_result["geometry"]["location"]
+        lat = loc["lat"].to_f
+        lng = loc["lng"].to_f
+
+        [lat, lng]
+      rescue => e
+        Rails.logger.warn(
+          "TexdemEvents: Google geocode failed for #{location.inspect}: #{e.class} #{e.message}"
+        )
+        [nil, nil]
+      end
+    end
+
+    def geocode_with_nominatim(location)
       begin
         uri = URI("https://nominatim.openstreetmap.org/search")
         params = { q: location, format: "json", limit: 1 }
         uri.query = URI.encode_www_form(params)
 
         http = Net::HTTP.new(uri.host, uri.port)
-        http.use_ssl = (uri.scheme == "https")
+        http.use_ssl = true
         http.read_timeout = 8
         http.open_timeout = 8
 
         request = Net::HTTP::Get.new(uri)
-        request["User-Agent"] = "TexDemEventsCore/0.11.4 (forum.texdem.org)"
+        request["User-Agent"] = "TexDemEventsCore/0.11.3 (forum.texdem.org)"
 
         response = http.request(request)
 
         unless response.is_a?(Net::HTTPSuccess)
           Rails.logger.warn(
-            "TexdemEvents: geocode HTTP #{response.code} for #{location.inspect}"
+            "TexdemEvents: Nominatim geocode HTTP #{response.code} for #{location.inspect}"
           )
           return [nil, nil]
         end
 
         json  = JSON.parse(response.body)
         first = json.first
-
-        unless first
-          Rails.logger.warn(
-            "TexdemEvents: geocode no results for #{location.inspect}"
-          )
-          return [nil, nil]
-        end
+        return [nil, nil] unless first
 
         lat = first["lat"].to_f
         lng = first["lon"].to_f
 
-        Rails.logger.warn(
-          "TexdemEvents: geocode OK for #{location.inspect} -> [#{lat}, #{lng}]"
-        )
-
-        Discourse.cache.write(cache_key, [lat, lng], expires_in: 7.days)
         [lat, lng]
       rescue => e
         Rails.logger.warn(
-          "TexdemEvents: geocode failed for #{location.inspect}: " \
-          "#{e.class} #{e.message}"
+          "TexdemEvents: Nominatim geocode failed for #{location.inspect}: #{e.class} #{e.message}"
         )
         [nil, nil]
       end
