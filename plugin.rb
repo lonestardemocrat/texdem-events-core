@@ -366,20 +366,34 @@ after_initialize do
       display_location_name = loc_name_from_body&.strip
       display_address       = address_from_body&.strip
 
-      # Build geocode components: Address, City, State, ZIP (ignore county for lookup)
-      components = []
-      components << display_address if display_address.present?
-      components << city if city.present?
-      components << state if state.present?
-      components << zip if zip.present?
+      # Start from the full Address line if present (this is what worked before).
+      base = display_address.presence || display_location_name
 
-      geocode_base = components.compact.join(", ")
-      geocode_base = display_location_name if geocode_base.blank? && display_location_name.present?
+      # Normalize for "does this already include X?"
+      downcased = base.to_s.downcase
+
+      if city.present? && !downcased.include?(city.downcase)
+        base = base.present? ? "#{base}, #{city}" : city
+        downcased = base.downcase
+      end
+
+      if state.present? && !downcased.include?(state.downcase)
+        base = base.present? ? "#{base}, #{state}" : state
+        downcased = base.downcase
+      end
+
+      if zip.present? && !downcased.include?(zip.downcase)
+        base = base.present? ? "#{base}, #{zip}" : zip
+        downcased = base.downcase
+      end
 
       # Ensure we have a country hint
-      if geocode_base.present? && geocode_base !~ /\b(USA|United States)\b/i
-        geocode_base = "#{geocode_base}, USA"
+      if base.present? && base !~ /\b(USA|United States)\b/i
+        base = "#{base}, USA"
       end
+
+      geocode_base = base
+
 
 
       lat = nil
