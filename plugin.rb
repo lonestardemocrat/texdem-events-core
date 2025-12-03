@@ -1,6 +1,6 @@
 # name: texdem-events-core
 # about: Minimal backend-only JSON endpoint for TexDem events, based on selected Discourse categories.
-# version: 0.11.1
+# version: 0.11.2
 # authors: TexDem
 # url: https://texdem.org
 # requires_plugin: discourse-calendar
@@ -160,7 +160,7 @@ after_initialize do
   end
 
   #
-  # EVENT FETCHER 0.11.1 (Visibility-filtered)
+  # EVENT FETCHER 0.11.2 (Visibility + City/ZIP support)
   #
   class ::TexdemEvents::EventFetcher
     SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
@@ -192,10 +192,12 @@ after_initialize do
       return nil if raw.blank?
 
       raw.each_line do |line|
+        # Bold label: **Label:** value
         if line =~ /\*\*#{Regexp.escape(label)}:\*\*\s*(.+)\s*$/i
           return Regexp.last_match(1).strip
         end
 
+        # Plain: Label: value
         if line =~ /#{Regexp.escape(label)}:\s*(.+)\s*$/i
           return Regexp.last_match(1).strip
         end
@@ -233,6 +235,7 @@ after_initialize do
     def parse_times_from_raw(raw, post)
       tz_name = SERVER_TIME_ZONE.name
 
+      # [date-range ...]
       if raw =~ /\[date-range\s+from=(?<from>[^\s\]]+)\s+to=(?<to>[^\s\]]+)(?:\s+timezone="(?<tz>[^"]+)")?/i
         from_str = Regexp.last_match(:from)
         to_str   = Regexp.last_match(:to)
@@ -247,6 +250,7 @@ after_initialize do
         return [start_time, end_time, tz_name]
       end
 
+      # [date=YYYY-MM-DD time=HHMMSS ...]
       if raw =~ /\[date=(?<date>\d{4}-\d{2}-\d{2})(?:\s+time=(?<time>\d{6}))?(?:\s+timezone="(?<tz>[^"]+)")?\]/i
         date_str = Regexp.last_match(:date)
         time_raw = Regexp.last_match(:time) || "000000"
@@ -264,6 +268,7 @@ after_initialize do
         return [start_time, end_time, tz_name]
       end
 
+      # Fallback: created_at
       start_time = post.created_at.in_time_zone(SERVER_TIME_ZONE)
       end_time   = start_time + 1.hour
 
@@ -293,7 +298,7 @@ after_initialize do
         http.open_timeout = 3
 
         request = Net::HTTP::Get.new(uri)
-        request["User-Agent"] = "TexDemEventsCore/0.11.1 (forum.texdem.org)"
+        request["User-Agent"] = "TexDemEventsCore/0.11.2 (forum.texdem.org)"
 
         response = http.request(request)
         return [nil, nil] unless response.is_a?(Net::HTTPSuccess)
@@ -322,19 +327,16 @@ after_initialize do
     end
 
     #
-    # CORE MAPPER (with Visibility filter)
+    # CORE MAPPER (Visibility + City/ZIP)
     #
     def map_post_to_event(post)
       raw = post.raw
       return nil if raw.blank?
 
-      # ------------------------------------------------------------------
-      # NEW FILTER: Only include posts explicitly marked as public events
-      # ------------------------------------------------------------------
+      # Only include posts explicitly marked as public events
       unless raw.match?(/visibility:\s*public/i)
         return nil
       end
-      # ------------------------------------------------------------------
 
       topic = post.topic
       return nil if topic.blank?
@@ -345,6 +347,9 @@ after_initialize do
       loc_name_from_body = extract_event_detail_from_raw(raw, "Location") ||
                            extract_event_detail_from_raw(raw, "Location name")
       address_from_body  = extract_event_detail_from_raw(raw, "Address")
+      city_from_body     = extract_event_detail_from_raw(raw, "City")
+      zip_from_body      = extract_event_detail_from_raw(raw, "ZIP") ||
+                           extract_event_detail_from_raw(raw, "Zip")
       summary_from_body  = extract_event_detail_from_raw(raw, "Summary")
       url_from_body      = extract_event_detail_from_raw(raw, "RSVP / More info") ||
                            extract_event_detail_from_raw(raw, "URL")
@@ -353,10 +358,23 @@ after_initialize do
       county = county_from_body&.strip
       county = county.titleize if county.present?
 
+      city = city_from_body&.strip
+      zip  = zip_from_body&.strip
+
       display_location_name = loc_name_from_body&.strip
       display_address       = address_from_body&.strip
 
-      geocode_base = display_address.presence || display_location_name
+      # Build a better geocode string:
+      # Address, City, (optional County), ZIP
+      components = []
+      components << display_address if display_address.present?
+      components << city if city.present?
+      components << county if county.present?
+      components << zip if zip.present?
+
+      geocode_base = components.compact.join(", ")
+      geocode_base = display_location_name if geocode_base.blank? && display_location_name.present?
+
       lat = nil
       lng = nil
 
@@ -364,7 +382,7 @@ after_initialize do
         Rails.logger.warn(
           "TexdemEvents geocode: topic=#{post.topic_id} post=#{post.id} " \
           "title=#{topic.title.inspect} geocode_base=#{geocode_base.inspect} " \
-          "county=#{county.inspect}"
+          "county=#{county.inspect} city=#{city.inspect} zip=#{zip.inspect}"
         )
 
         lat, lng = geocode_location(geocode_base)
@@ -403,6 +421,8 @@ after_initialize do
         start:                start_time&.iso8601,
         end:                  end_time&.iso8601,
         county:               county,
+        city:                 city,
+        zip:                  zip,
         location_name:        display_location_name,
         address:              display_address,
         lat:                  lat,
@@ -417,7 +437,7 @@ after_initialize do
         external_url:         url_from_body&.strip,
         graphic_url:          graphic_from_body&.strip,
         rsvp_enabled:         false,
-        debug_version:        "texdem-events-v0.11.1"
+        debug_version:        "texdem-events-v0.11.2"
       }
     end
   end
