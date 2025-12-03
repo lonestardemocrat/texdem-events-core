@@ -1,6 +1,6 @@
 # name: texdem-events-core
 # about: Minimal backend-only JSON endpoint for TexDem events, based on selected Discourse categories.
-# version: 0.9.0
+# version: 0.10.0
 # authors: TexDem
 # url: https://texdem.org
 # requires_plugin: discourse-calendar
@@ -177,7 +177,7 @@ after_initialize do
     end
   end
 
-    #
+  #
   # EVENT FETCHER
   #
   class ::TexdemEvents::EventFetcher
@@ -322,7 +322,7 @@ after_initialize do
         http.open_timeout = 3
 
         request = Net::HTTP::Get.new(uri)
-        request["User-Agent"] = "TexDemEventsCore/0.9.0 (forum.texdem.org)"
+        request["User-Agent"] = "TexDemEventsCore/0.10.0 (forum.texdem.org)"
 
         response = http.request(request)
         return [nil, nil] unless response.is_a?(Net::HTTPSuccess)
@@ -485,7 +485,7 @@ after_initialize do
         graphic_url:          graphic_from_body&.strip,
         rsvp_enabled:         rsvp_enabled,
 
-        debug_version:        "texdem-events-v0.9.0"
+        debug_version:        "texdem-events-v0.10.0"
       }
     end
   end
