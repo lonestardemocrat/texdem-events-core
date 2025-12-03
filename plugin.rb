@@ -1,6 +1,6 @@
 # name: texdem-events-core
 # about: Minimal backend-only JSON endpoint for TexDem events, based on selected Discourse categories.
-# version: 0.8.0
+# version: 0.9.0
 # authors: TexDem
 # url: https://texdem.org
 # requires_plugin: discourse-calendar
@@ -209,7 +209,6 @@ after_initialize do
           .where("posts.deleted_at IS NULL")
           .where("posts.raw LIKE '%Visibility: public%'")
 
-
         if category_ids.present?
           posts = posts.where("topics.category_id IN (?)", category_ids)
         end
@@ -306,7 +305,7 @@ after_initialize do
         http.open_timeout = 3
 
         request = Net::HTTP::Get.new(uri)
-        request["User-Agent"] = "TexDemEventsCore/0.8.0 (forum.texdem.org)"
+        request["User-Agent"] = "TexDemEventsCore/0.9.0 (forum.texdem.org)"
 
         response = http.request(request)
         return [nil, nil] unless response.is_a?(Net::HTTPSuccess)
@@ -338,7 +337,7 @@ after_initialize do
       0
     end
 
-        # Core mapper: convert a single post into an event Hash (or nil if invalid).
+    # Core mapper: convert a single post into an event Hash (or nil if invalid).
     def map_post_to_event(post)
       raw = post.raw
       return nil if raw.blank?
@@ -366,13 +365,13 @@ after_initialize do
       tz_name    = calendar_event.timezone.presence || SERVER_TIME_ZONE.name
 
       # Pull details from the Event Details block (if present)
-      county_from_body      = extract_event_detail_from_raw(raw, "County")
-      loc_name_from_body    = extract_event_detail_from_raw(raw, "Location name")
-      address_from_body     = extract_event_detail_from_raw(raw, "Address")
-      visibility_from_field = extract_event_detail_from_raw(raw, "Visibility")
-      summary_from_body     = extract_event_detail_from_raw(raw, "Summary")
-      url_from_body         = extract_event_detail_from_raw(raw, "URL")
-      graphic_from_body     = extract_event_detail_from_raw(raw, "Graphic")
+      county_from_body       = extract_event_detail_from_raw(raw, "County")
+      loc_name_from_body     = extract_event_detail_from_raw(raw, "Location name")
+      address_from_body      = extract_event_detail_from_raw(raw, "Address")
+      visibility_from_field  = extract_event_detail_from_raw(raw, "Visibility")
+      summary_from_body      = extract_event_detail_from_raw(raw, "Summary")
+      url_from_body          = extract_event_detail_from_raw(raw, "URL")
+      graphic_from_body      = extract_event_detail_from_raw(raw, "Graphic")
       rsvp_setting_from_body = extract_event_detail_from_raw(raw, "RSVP")
 
       # Visibility gate: only treat explicitly public events as JSON events
@@ -464,7 +463,7 @@ after_initialize do
         graphic_url:          graphic_from_body&.strip,
         rsvp_enabled:         rsvp_enabled,
 
-        debug_version:        "texdem-events-v12"
+        debug_version:        "texdem-events-v0.9.0"
       }
     end
   end
