@@ -177,17 +177,23 @@ after_initialize do
     end
   end
 
-  #
+    #
   # EVENT FETCHER
   #
   class ::TexdemEvents::EventFetcher
     SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
 
+    PUBLIC_MARKERS = [
+      "Visibility: public",        # Event Details field (legacy)
+      "[texdem-public]",           # new explicit marker
+      "texdem-visibility: public", # future/alt marker, just in case
+    ].freeze
+
     # Main entry point used by the JSON controller.
     #
     # Uses the official Discourse Calendar plugin:
     # - Only posts that have a row in discourse_calendar_calendar_events
-    # - Only posts that contain "Visibility: public" in the Event Details block
+    # - Only posts that are explicitly public (Visibility: public OR [texdem-public])
     def fetch_events
       return [] unless SiteSetting.texdem_events_enabled
 
@@ -201,13 +207,18 @@ after_initialize do
 
       category_ids = parse_category_ids(SiteSetting.texdem_events_category_ids)
 
+      # Build SQL visibility filter for performance: any of the markers
+      visibility_sql = PUBLIC_MARKERS
+        .map { |m| "posts.raw LIKE " + ActiveRecord::Base.connection.quote("%#{m}%") }
+        .join(" OR ")
+
       begin
         posts = Post
           .joins(:topic)
           .joins("INNER JOIN discourse_calendar_calendar_events dcc ON dcc.post_id = posts.id")
           .where("topics.visible = ? AND topics.deleted_at IS NULL", true)
           .where("posts.deleted_at IS NULL")
-          .where("posts.raw LIKE '%Visibility: public%'")
+          .where(visibility_sql)
 
         if category_ids.present?
           posts = posts.where("topics.category_id IN (?)", category_ids)
@@ -242,6 +253,12 @@ after_initialize do
       raw.split(",").map(&:strip).map(&:to_i).reject(&:zero?)
     end
 
+    # Helper: does the raw post text contain *any* public marker?
+    def raw_has_public_marker?(raw)
+      return false if raw.blank?
+      PUBLIC_MARKERS.any? { |m| raw.include?(m) }
+    end
+
     # Helper to pull a field from the "Event Details" block in a raw post body.
     def extract_event_detail_from_raw(raw, label)
       return nil if raw.blank?
@@ -266,14 +283,14 @@ after_initialize do
     end
 
     # Try to derive a human-readable event title from the post body.
-    # Skip [date=...] lines and the **Event Details** header.
+    # Skip [date=...] / [date-range ...] lines and the **Event Details** header.
     def extract_event_title_from_raw(raw)
       return nil if raw.blank?
 
       raw.each_line do |line|
         line = line.strip
         next if line.blank?
-        next if line.start_with?("[date=")
+        next if line.start_with?("[date")      # covers [date=...] and [date-range ...]
         next if line =~ /^\*\*Event Details\*\*/i
 
         return line
@@ -374,8 +391,13 @@ after_initialize do
       graphic_from_body      = extract_event_detail_from_raw(raw, "Graphic")
       rsvp_setting_from_body = extract_event_detail_from_raw(raw, "RSVP")
 
-      # Visibility gate: only treat explicitly public events as JSON events
+      # Visibility gate:
+      # - if there's a Visibility: field, obey it;
+      # - otherwise, fall back to raw markers like [texdem-public].
       visible_value = visibility_from_field&.strip&.downcase
+      if visible_value.blank? && raw_has_public_marker?(raw)
+        visible_value = "public"
+      end
       return nil unless visible_value == "public"
 
       # County
@@ -408,7 +430,7 @@ after_initialize do
       root            = parent_category || category
       root_name       = root&.name
 
-      # Single canonical event title: first content line after [date], etc.
+      # Single canonical event title: first content line after [date]/[date-range], etc.
       event_title =
         extract_event_title_from_raw(raw) ||
         topic.title
