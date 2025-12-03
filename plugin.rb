@@ -366,13 +366,12 @@ after_initialize do
       display_location_name = loc_name_from_body&.strip
       display_address       = address_from_body&.strip
 
-      # Build geocode components: Address, City, County, ZIP, State
+      # Build geocode components: Address, City, State, ZIP (ignore county for lookup)
       components = []
       components << display_address if display_address.present?
       components << city if city.present?
-      components << county if county.present?
-      components << zip if zip.present?
       components << state if state.present?
+      components << zip if zip.present?
 
       geocode_base = components.compact.join(", ")
       geocode_base = display_location_name if geocode_base.blank? && display_location_name.present?
@@ -381,6 +380,7 @@ after_initialize do
       if geocode_base.present? && geocode_base !~ /\b(USA|United States)\b/i
         geocode_base = "#{geocode_base}, USA"
       end
+
 
       lat = nil
       lng = nil
