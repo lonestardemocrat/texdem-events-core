@@ -1,6 +1,6 @@
 # name: texdem-events-core
 # about: Minimal backend-only JSON endpoint for TexDem events, based on selected Discourse categories.
-# version: 0.11.2
+# version: 0.11.3
 # authors: TexDem
 # url: https://texdem.org
 # requires_plugin: discourse-calendar
@@ -160,7 +160,7 @@ after_initialize do
   end
 
   #
-  # EVENT FETCHER 0.11.2 (Visibility + City/ZIP support)
+  # EVENT FETCHER 0.11.3 (Visibility + City/State/ZIP + robust geocode)
   #
   class ::TexdemEvents::EventFetcher
     SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
@@ -298,7 +298,7 @@ after_initialize do
         http.open_timeout = 3
 
         request = Net::HTTP::Get.new(uri)
-        request["User-Agent"] = "TexDemEventsCore/0.11.2 (forum.texdem.org)"
+        request["User-Agent"] = "TexDemEventsCore/0.11.3 (forum.texdem.org)"
 
         response = http.request(request)
         return [nil, nil] unless response.is_a?(Net::HTTPSuccess)
@@ -327,7 +327,7 @@ after_initialize do
     end
 
     #
-    # CORE MAPPER (Visibility + City/ZIP)
+    # CORE MAPPER (Visibility + City/State/ZIP + robust geocode)
     #
     def map_post_to_event(post)
       raw = post.raw
@@ -348,6 +348,7 @@ after_initialize do
                            extract_event_detail_from_raw(raw, "Location name")
       address_from_body  = extract_event_detail_from_raw(raw, "Address")
       city_from_body     = extract_event_detail_from_raw(raw, "City")
+      state_from_body    = extract_event_detail_from_raw(raw, "State")
       zip_from_body      = extract_event_detail_from_raw(raw, "ZIP") ||
                            extract_event_detail_from_raw(raw, "Zip")
       summary_from_body  = extract_event_detail_from_raw(raw, "Summary")
@@ -358,22 +359,28 @@ after_initialize do
       county = county_from_body&.strip
       county = county.titleize if county.present?
 
-      city = city_from_body&.strip
-      zip  = zip_from_body&.strip
+      city  = city_from_body&.strip
+      state = state_from_body&.strip
+      zip   = zip_from_body&.strip
 
       display_location_name = loc_name_from_body&.strip
       display_address       = address_from_body&.strip
 
-      # Build a better geocode string:
-      # Address, City, (optional County), ZIP
+      # Build geocode components: Address, City, County, ZIP, State
       components = []
       components << display_address if display_address.present?
       components << city if city.present?
       components << county if county.present?
       components << zip if zip.present?
+      components << state if state.present?
 
       geocode_base = components.compact.join(", ")
       geocode_base = display_location_name if geocode_base.blank? && display_location_name.present?
+
+      # Ensure we have a country hint
+      if geocode_base.present? && geocode_base !~ /\b(USA|United States)\b/i
+        geocode_base = "#{geocode_base}, USA"
+      end
 
       lat = nil
       lng = nil
@@ -382,7 +389,7 @@ after_initialize do
         Rails.logger.warn(
           "TexdemEvents geocode: topic=#{post.topic_id} post=#{post.id} " \
           "title=#{topic.title.inspect} geocode_base=#{geocode_base.inspect} " \
-          "county=#{county.inspect} city=#{city.inspect} zip=#{zip.inspect}"
+          "county=#{county.inspect} city=#{city.inspect} state=#{state.inspect} zip=#{zip.inspect}"
         )
 
         lat, lng = geocode_location(geocode_base)
@@ -422,6 +429,7 @@ after_initialize do
         end:                  end_time&.iso8601,
         county:               county,
         city:                 city,
+        state:                state,
         zip:                  zip,
         location_name:        display_location_name,
         address:              display_address,
@@ -437,7 +445,7 @@ after_initialize do
         external_url:         url_from_body&.strip,
         graphic_url:          graphic_from_body&.strip,
         rsvp_enabled:         false,
-        debug_version:        "texdem-events-v0.11.2"
+        debug_version:        "texdem-events-v0.11.3"
       }
     end
   end
