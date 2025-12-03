@@ -160,7 +160,7 @@ after_initialize do
   end
 
   #
-  # EVENT FETCHER 0.11.3 (Visibility + City/State/ZIP + robust geocode)
+  # EVENT FETCHER 0.11.4 (Visibility + City/State/ZIP + robust geocode)
   #
   class ::TexdemEvents::EventFetcher
     SERVER_TIME_ZONE = ActiveSupport::TimeZone["America/Chicago"]
@@ -298,30 +298,40 @@ after_initialize do
         http.open_timeout = 8
 
         request = Net::HTTP::Get.new(uri)
-        request["User-Agent"] = "TexDemEventsCore/0.11.3 (forum.texdem.org)"
+        request["User-Agent"] = "TexDemEventsCore/0.11.4 (forum.texdem.org)"
 
         response = http.request(request)
-        
-    # Log non-success responses
-    unless response.is_a?(Net::HTTPSuccess)
-      Rails.logger.warn(
-        "TexdemEvents: geocode HTTP #{response.code} for #{location.inspect}"
-      )
-      return [nil, nil]
-    end
+
+        unless response.is_a?(Net::HTTPSuccess)
+          Rails.logger.warn(
+            "TexdemEvents: geocode HTTP #{response.code} for #{location.inspect}"
+          )
+          return [nil, nil]
+        end
 
         json  = JSON.parse(response.body)
         first = json.first
-        return [nil, nil] unless first
+
+        unless first
+          Rails.logger.warn(
+            "TexdemEvents: geocode no results for #{location.inspect}"
+          )
+          return [nil, nil]
+        end
 
         lat = first["lat"].to_f
         lng = first["lon"].to_f
+
+        Rails.logger.warn(
+          "TexdemEvents: geocode OK for #{location.inspect} -> [#{lat}, #{lng}]"
+        )
 
         Discourse.cache.write(cache_key, [lat, lng], expires_in: 7.days)
         [lat, lng]
       rescue => e
         Rails.logger.warn(
-          "TexdemEvents: geocode failed for #{location.inspect}: #{e.class} #{e.message}"
+          "TexdemEvents: geocode failed for #{location.inspect}: " \
+          "#{e.class} #{e.message}"
         )
         [nil, nil]
       end
@@ -373,10 +383,8 @@ after_initialize do
       display_location_name = loc_name_from_body&.strip
       display_address       = address_from_body&.strip
 
-      # Start from the full Address line if present (this is what worked before).
+      # Build the geocode string
       base = display_address.presence || display_location_name
-
-      # Normalize for "does this already include X?"
       downcased = base.to_s.downcase
 
       if city.present? && !downcased.include?(city.downcase)
@@ -394,14 +402,11 @@ after_initialize do
         downcased = base.downcase
       end
 
-      # Ensure we have a country hint
       if base.present? && base !~ /\b(USA|United States)\b/i
         base = "#{base}, USA"
       end
 
       geocode_base = base
-
-
 
       lat = nil
       lng = nil
@@ -414,6 +419,17 @@ after_initialize do
         )
 
         lat, lng = geocode_location(geocode_base)
+
+        # Fallback: if house-level lookup fails, try city-level so we at least
+        # get a dot in roughly the right area
+        if lat.nil? && lng.nil? && city.present? && state.present?
+          fallback = [city, state, zip].compact.join(" ")
+          Rails.logger.warn(
+            "TexdemEvents geocode fallback: topic=#{post.topic_id} post=#{post.id} " \
+            "fallback=#{fallback.inspect}"
+          )
+          lat, lng = geocode_location("#{fallback}, USA")
+        end
       end
 
       category        = topic.category
@@ -466,7 +482,7 @@ after_initialize do
         external_url:         url_from_body&.strip,
         graphic_url:          graphic_from_body&.strip,
         rsvp_enabled:         false,
-        debug_version:        "texdem-events-v0.11.3"
+        debug_version:        "texdem-events-v0.11.4"
       }
     end
   end
