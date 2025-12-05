@@ -1,6 +1,6 @@
 # name: texdem-events-core
 # about: Minimal backend-only JSON endpoint for TexDem events, based on selected Discourse categories.
-# version: 0.11.3
+# version: 0.12.0
 # authors: TexDem
 # url: https://texdem.org
 # requires_plugin: discourse-calendar
