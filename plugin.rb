@@ -175,7 +175,7 @@ after_initialize do
         .joins(:topic)
         .where("topics.visible = ? AND topics.deleted_at IS NULL", true)
         .where("posts.deleted_at IS NULL")
-        .order("posts.created_at DESC")
+        .order("posts.updated_at DESC")
         .limit(limit * 10)
 
       events = posts.map { |post| map_post_to_event(post) }.compact
