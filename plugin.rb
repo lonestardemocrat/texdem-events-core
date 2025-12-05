@@ -176,7 +176,7 @@ after_initialize do
         .where("topics.visible = ? AND topics.deleted_at IS NULL", true)
         .where("posts.deleted_at IS NULL")
         .order("posts.created_at DESC")
-        .limit(limit * 2)
+        .limit(limit * 10)
 
       events = posts.map { |post| map_post_to_event(post) }.compact
       events = events.sort_by { |e| e[:start].to_s }
@@ -188,17 +188,22 @@ after_initialize do
     #
     # Label extractors from raw
     #
-    def extract_event_detail_from_raw(raw, label)
+        def extract_event_detail_from_raw(raw, label)
       return nil if raw.blank?
 
       raw.each_line do |line|
+        l = line.strip
+
+        # Allow optional "- " bullet at start
+        l.sub!(/^\-\s*/, "")
+
         # Bold label: **Label:** value
-        if line =~ /\*\*#{Regexp.escape(label)}:\*\*\s*(.+)\s*$/i
+        if l =~ /\*\*#{Regexp.escape(label)}:\*\*\s*(.+)\s*$/i
           return Regexp.last_match(1).strip
         end
 
-        # Plain: Label: value
-        if line =~ /#{Regexp.escape(label)}:\s*(.+)\s*$/i
+        # Plain label: Label: value
+        if l =~ /^#{Regexp.escape(label)}:\s*(.+)\s*$/i
           return Regexp.last_match(1).strip
         end
       end
@@ -250,16 +255,34 @@ after_initialize do
         return [start_time, end_time, tz_name]
       end
 
-      # [date=YYYY-MM-DD time=HHMMSS ...]
-      if raw =~ /\[date=(?<date>\d{4}-\d{2}-\d{2})(?:\s+time=(?<time>\d{6}))?(?:\s+timezone="(?<tz>[^"]+)")?\]/i
+      # [date=YYYY-MM-DD time=HH:MM] or time=HHMM or time=HHMMSS
+      if raw =~ /\[date=(?<date>\d{4}-\d{2}-\d{2})(?:\s+time=(?<time>[0-9:]+))?(?:\s+timezone="(?<tz>[^"]+)")?\]/i
         date_str = Regexp.last_match(:date)
         time_raw = Regexp.last_match(:time) || "000000"
         tz       = Regexp.last_match(:tz)
         tz_name  = tz if tz.present?
 
-        hh = time_raw[0, 2]
-        mm = time_raw[2, 2]
-        ss = time_raw[4, 2]
+        # Normalize time: strip colons, then interpret
+        time_digits = time_raw.delete(":")
+
+        case time_digits.length
+        when 2
+          hh = time_digits
+          mm = "00"
+          ss = "00"
+        when 4
+          hh = time_digits[0, 2]
+          mm = time_digits[2, 2]
+          ss = "00"
+        when 6
+          hh = time_digits[0, 2]
+          mm = time_digits[2, 2]
+          ss = time_digits[4, 2]
+        else
+          hh = "00"
+          mm = "00"
+          ss = "00"
+        end
 
         zone = ActiveSupport::TimeZone[tz_name] || SERVER_TIME_ZONE
         start_time = zone.parse("#{date_str} #{hh}:#{mm}:#{ss}")
@@ -267,6 +290,8 @@ after_initialize do
 
         return [start_time, end_time, tz_name]
       end
+
+      
 
       # Fallback: created_at
       start_time = post.created_at.in_time_zone(SERVER_TIME_ZONE)
@@ -418,13 +443,16 @@ after_initialize do
     # CORE MAPPER (Visibility + City/State/ZIP + robust geocode)
     #
     def map_post_to_event(post)
-      raw = post.raw
+            raw = post.raw
       return nil if raw.blank?
 
+      visibility_value = extract_event_detail_from_raw(raw, "Visibility")
+
       # Only include posts explicitly marked as public events
-      unless raw.match?(/visibility:\s*public/i)
+      unless visibility_value && visibility_value.strip.casecmp("public").zero?
         return nil
       end
+
 
       topic = post.topic
       return nil if topic.blank?
