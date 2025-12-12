@@ -6,80 +6,78 @@ module ::TexdemEvents
 
     def self.reindex_post!(post_id)
       post = Post.find_by(id: post_id)
-      return if post.blank? || post.deleted_at.present?
+      return if post.nil? || post.deleted_at.present?
 
       topic = post.topic
-      return if topic.blank? || topic.deleted_at.present?
-      return unless topic.visible
-      return if topic.unlisted? # <- this was your “unlisted” gotcha
+      return if topic.nil? || topic.deleted_at.present?
+      return unless topic.visible # IMPORTANT: unlisted/unvisible should not index
 
       raw = post.raw.to_s
       return if raw.blank?
 
-      visibility = extract_detail(raw, "Visibility")
-      return unless visibility&.strip&.casecmp("public")&.zero?
+      visibility = extract_field(raw, "Visibility")
+      visibility = visibility.to_s.strip.downcase
+      return unless visibility == "public"
 
       title = extract_title(raw) || topic.title.to_s
 
-      starts_at, ends_at, tz = parse_times(raw, post)
-      return if starts_at.blank?
+      starts_at, ends_at, tz = parse_times_from_raw(raw, post)
 
-      location_name = extract_detail(raw, "Location") || extract_detail(raw, "Location name")
-      address       = extract_detail(raw, "Address")
-      city          = extract_detail(raw, "City")
-      state         = extract_detail(raw, "State")
-      zip           = extract_detail(raw, "ZIP") || extract_detail(raw, "Zip")
-      external_url  = extract_detail(raw, "RSVP / More info") || extract_detail(raw, "URL")
-      graphic_url   = extract_detail(raw, "Graphic")
+      city  = extract_field(raw, "City")&.strip
+      state = extract_field(raw, "State")&.strip
+      zip   = (extract_field(raw, "ZIP") || extract_field(raw, "Zip"))&.strip
 
-      # If state is missing, we assume TX for your use-case.
-      # This stops “random world hits” when address is incomplete.
-      inferred_state = state.presence || "TX"
+      # Default state/country to Texas/USA if missing
+      state = SiteSetting.texdem_events_default_state if state.blank?
+      country = SiteSetting.texdem_events_default_country
 
-      # Only attempt geocode if we have something reasonable.
-      # (We’ll keep it cheap; you can make this async later.)
-      lat = nil
-      lng = nil
+      location_name = (extract_field(raw, "Location") || extract_field(raw, "Location name"))&.strip
+      address       = extract_field(raw, "Address")&.strip
 
-      geocode_base = [address.presence || location_name, city, inferred_state, zip].compact.join(", ")
-      geocode_base = "#{geocode_base}, USA" if geocode_base.present? && geocode_base !~ /\bUSA\b/i
+      external_url  = (extract_field(raw, "RSVP / More info") || extract_field(raw, "URL"))&.strip
+      graphic_url   = extract_field(raw, "Graphic")&.strip
 
-      # For now: NO geocoding during indexing (fast path).
-      # If you want, we’ll add a separate job later to fill lat/lng.
+      geocode_query = build_geocode_query(
+        address: address,
+        location_name: location_name,
+        city: city,
+        state: state,
+        zip: zip,
+        country: country
+      )
+
+      lat, lng = ::TexdemEvents::Geocoder.geocode(geocode_query)
 
       row = ::TexdemEvents::EventIndex.find_or_initialize_by(post_id: post.id)
-      row.topic_id       = topic.id
-      row.category_id    = topic.category_id
-      row.title          = title
-      row.starts_at      = starts_at
-      row.ends_at        = ends_at
-      row.timezone       = tz
-      row.location_name  = location_name
-      row.address        = address
-      row.city           = city
-      row.state          = inferred_state
-      row.zip            = zip
-      row.visibility     = "public"
-      row.lat            = lat
-      row.lng            = lng
-      row.external_url   = external_url
-      row.graphic_url    = graphic_url
-      row.source         = "post"
+
+      row.topic_id      = topic.id
+      row.category_id   = topic.category_id
+      row.visibility    = "public"
+      row.title         = title
+      row.starts_at     = starts_at
+      row.ends_at       = ends_at
+      row.timezone      = tz
+      row.location_name = location_name
+      row.address       = address
+      row.city          = city
+      row.state         = state
+      row.zip           = zip
+      row.lat           = lat
+      row.lng           = lng
+      row.external_url  = external_url
+      row.graphic_url   = graphic_url
+      row.indexed_at    = Time.zone.now
+
       row.save!
+    rescue => e
+      Rails.logger.warn("TexdemEvents Indexer failed post_id=#{post_id}: #{e.class} #{e.message}")
     end
 
-    def self.extract_title(raw)
-      raw.each_line do |line|
-        l = line.strip
-        next if l.blank?
-        next if l.start_with?("[date")
-        next if l =~ /^\*\*Event Details\*\*/i
-        return l
-      end
-      nil
+    def self.deindex_post!(post_id)
+      ::TexdemEvents::EventIndex.where(post_id: post_id).delete_all
     end
 
-    def self.extract_detail(raw, label)
+    def self.extract_field(raw, label)
       raw.each_line do |line|
         l = line.strip
         l.sub!(/^\-\s*/, "")
@@ -94,12 +92,35 @@ module ::TexdemEvents
       nil
     end
 
-    def self.parse_times(raw, post)
+    def self.extract_title(raw)
+      raw.each_line do |line|
+        t = line.strip
+        next if t.blank?
+        next if t.start_with?("[date")
+        next if t.start_with?("[date-range")
+        next if t =~ /^\*\*Event Details\*\*/i
+        return t
+      end
+      nil
+    end
+
+    def self.parse_times_from_raw(raw, post)
       tz_name = SERVER_TZ.name
+
+      if raw =~ /\[date-range\s+from=(?<from>[^\s\]]+)\s+to=(?<to>[^\s\]]+)(?:\s+timezone="(?<tz>[^"]+)")?/i
+        from_str = Regexp.last_match(:from)
+        to_str   = Regexp.last_match(:to)
+        tz       = Regexp.last_match(:tz)
+        tz_name  = tz if tz.present?
+
+        start_time = parse_datetime(from_str, tz_name) || post.created_at.in_time_zone(SERVER_TZ)
+        end_time   = parse_datetime(to_str, tz_name)   || (start_time + 1.hour)
+        return [start_time, end_time, tz_name]
+      end
 
       if raw =~ /\[date=(?<date>\d{4}-\d{2}-\d{2})(?:\s+time=(?<time>[0-9:]+))?(?:\s+timezone="(?<tz>[^"]+)")?\]/i
         date_str = Regexp.last_match(:date)
-        time_raw = (Regexp.last_match(:time) || "000000")
+        time_raw = Regexp.last_match(:time) || "000000"
         tz       = Regexp.last_match(:tz)
         tz_name  = tz if tz.present?
 
@@ -113,15 +134,31 @@ module ::TexdemEvents
           end
 
         zone = ActiveSupport::TimeZone[tz_name] || SERVER_TZ
-        starts_at = zone.parse("#{date_str} #{hh}:#{mm}:#{ss}")
-        ends_at   = starts_at + 1.hour
-        return [starts_at, ends_at, tz_name]
+        start_time = zone.parse("#{date_str} #{hh}:#{mm}:#{ss}")
+        end_time   = start_time + 1.hour
+        return [start_time, end_time, tz_name]
       end
 
-      starts_at = post.created_at.in_time_zone(SERVER_TZ)
-      [starts_at, starts_at + 1.hour, tz_name]
+      start_time = post.created_at.in_time_zone(SERVER_TZ)
+      [start_time, start_time + 1.hour, tz_name]
+    end
+
+    def self.parse_datetime(str, tz_name)
+      zone = ActiveSupport::TimeZone[tz_name] || SERVER_TZ
+      zone.parse(str)
     rescue
-      [nil, nil, tz_name]
+      nil
+    end
+
+    def self.build_geocode_query(address:, location_name:, city:, state:, zip:, country:)
+      base = address.presence || location_name
+      parts = []
+      parts << base if base.present?
+      parts << city if city.present?
+      parts << state if state.present?
+      parts << zip if zip.present?
+      parts << country if country.present?
+      parts.compact.join(", ")
     end
   end
 end
