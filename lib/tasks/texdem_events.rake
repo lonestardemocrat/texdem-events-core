@@ -1,55 +1,35 @@
-# frozen_string_literal: true
+# /var/www/discourse/plugins/texdem-events-core/lib/tasks/texdem_events.rake
 
-module ::TexdemEvents
-  class EventsController < ::ApplicationController
-    requires_plugin "texdem-events-core"
+namespace :texdem_events do
+  desc "Reindex all TexDem events"
+  task reindex_all: :environment do
+    puts "[texdem_events] Starting full reindex..."
 
-    skip_before_action :check_xhr
-    skip_before_action :redirect_to_login_if_required
-
-    def index
-      raise Discourse::NotFound unless SiteSetting.texdem_events_enabled
-
-      limit = SiteSetting.texdem_events_limit.to_i
-      limit = 200 if limit <= 0
-
-      rows = ::TexdemEvents::EventIndex
-        .where(visibility: "public")
-        .where("starts_at IS NOT NULL")
-        .order("starts_at ASC")
-        .limit(limit)
-
-      full = params[:full].to_s == "1"
-
-      events = rows.map do |r|
-        base = {
-          id: "discourse-post-#{r.post_id}",
-          post_id: r.post_id,
-          topic_id: r.topic_id,
-          category_id: r.category_id,
-          title: r.title,
-          start: r.starts_at&.iso8601,
-          end: r.ends_at&.iso8601,
-          timezone: r.timezone,
-          location_name: r.location_name,
-          address: r.address,
-          city: r.city,
-          state: r.state,
-          zip: r.zip,
-          lat: r.lat,
-          lng: r.lng,
-          external_url: r.external_url,
-          graphic_url: r.graphic_url
-        }
-
-        if full
-          base[:indexed_at] = r.indexed_at&.iso8601
-        end
-
-        base
-      end
-
-      render_json_dump(events)
+    unless defined?(::TexdemEvents::Indexer)
+      # Make sure our lib loads even if plugin autoload order changes
+      require_relative "../texdem_events/indexer"
     end
+
+    # You can swap this to your own “find candidate posts” query later.
+    # For now, just reindex posts that look like event posts or have calendar tag.
+    post_ids = Post
+      .joins(:topic)
+      .where("posts.deleted_at IS NULL")
+      .where("topics.deleted_at IS NULL")
+      .where("topics.visible = ?", true)
+      .where("posts.raw ILIKE ? OR topics.id IN (SELECT topic_id FROM topic_tags)", "%Visibility:%")
+      .limit(50_000)
+      .pluck(:id)
+
+    puts "[texdem_events] Found #{post_ids.length} posts to reindex."
+
+    post_ids.each_with_index do |pid, i|
+      ::TexdemEvents::Indexer.reindex_post!(pid)
+      puts "[texdem_events] Reindexed #{i + 1}/#{post_ids.length}" if (i % 500).zero?
+    rescue => e
+      puts "[texdem_events] ERROR pid=#{pid}: #{e.class} #{e.message}"
+    end
+
+    puts "[texdem_events] Done."
   end
 end
