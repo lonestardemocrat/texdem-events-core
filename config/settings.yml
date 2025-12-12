@@ -4,10 +4,17 @@ plugins:
     client: false
 
   texdem_events_limit:
-    default: 100
+    default: 200
+    client: false
+
+  texdem_events_default_state:
+    default: "TX"
+    client: false
+
+  texdem_events_default_country:
+    default: "USA"
     client: false
 
   texdem_google_maps_api_key:
     default: ""
     client: false
-    secret: true
