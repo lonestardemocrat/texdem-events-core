@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-class CreateTexdemEventsEventIndex < ActiveRecord::Migration[7.0]
+class CreateTexdemEventsIndex < ActiveRecord::Migration[7.0]
   def change
     create_table :texdem_events_event_index do |t|
       t.integer  :post_id, null: false
