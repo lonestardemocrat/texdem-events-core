@@ -46,7 +46,20 @@ module ::TexdemEvents
         country: country
       )
 
-      lat, lng = ::TexdemEvents::Geocoder.geocode(geocode_query)
+      # --- COORD SANITATION: prevents (0,0) "Africa" pins ---
+      raw_lat, raw_lng = ::TexdemEvents::Geocoder.geocode(geocode_query)
+
+      lat = normalize_coord(raw_lat)
+      lng = normalize_coord(raw_lng)
+
+      unless valid_lat_lng?(lat, lng)
+        Rails.logger.info(
+          "[TexdemEvents] Dropping invalid coords for post_id=#{post.id} query=#{geocode_query.inspect} raw=#{[raw_lat, raw_lng].inspect}"
+        )
+        lat = nil
+        lng = nil
+      end
+      # ------------------------------------------------------
 
       row = ::TexdemEvents::EventIndex.find_or_initialize_by(post_id: post.id)
 
@@ -75,6 +88,23 @@ module ::TexdemEvents
 
     def self.deindex_post!(post_id)
       ::TexdemEvents::EventIndex.where(post_id: post_id).delete_all
+    end
+
+    # Treat nil/blank/"0"/"0.0" as missing; otherwise coerce to Float
+    def self.normalize_coord(value)
+      return nil if value.nil?
+
+      s = value.to_s.strip
+      return nil if s.blank? || s == "0" || s == "0.0"
+
+      Float(s)
+    rescue ArgumentError, TypeError
+      nil
+    end
+
+    def self.valid_lat_lng?(lat, lng)
+      return false if lat.nil? || lng.nil?
+      lat.between?(-90, 90) && lng.between?(-180, 180)
     end
 
     def self.extract_field(raw, label)
