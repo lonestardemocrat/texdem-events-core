@@ -3,99 +3,99 @@
 module ::TexdemEvents
   class Indexer
     SERVER_TZ = ActiveSupport::TimeZone["America/Chicago"]
-def self.reindex_post!(post_id)
-  post = Post.find_by(id: post_id)
-  return if post.nil? || post.deleted_at.present?
 
-  topic = post.topic
-  return if topic.nil? || topic.deleted_at.present?
-  return unless topic.visible # IMPORTANT: unlisted/unvisible should not index
+    def self.reindex_post!(post_id)
+      post = Post.find_by(id: post_id)
+      return if post.nil? || post.deleted_at.present?
 
-  raw = post.raw.to_s
-  return if raw.blank?
+      topic = post.topic
+      return if topic.nil? || topic.deleted_at.present?
+      return unless topic.visible # IMPORTANT: unlisted/unvisible should not index
 
-  visibility = extract_field(raw, "Visibility")
-  visibility = visibility.to_s.strip.downcase
-  return unless visibility == "public"
+      raw = post.raw.to_s
+      return if raw.blank?
 
-  title = extract_title(raw) || topic.title.to_s
+      visibility = extract_field(raw, "Visibility")
+      visibility = visibility.to_s.strip.downcase
+      return unless visibility == "public"
 
-  starts_at, ends_at, tz = parse_times_from_raw(raw, post)
+      title = extract_title(raw) || topic.title.to_s
 
-  city  = extract_field(raw, "City")&.strip
-  state = extract_field(raw, "State")&.strip
-  zip   = (extract_field(raw, "ZIP") || extract_field(raw, "Zip"))&.strip
+      starts_at, ends_at, tz = parse_times_from_raw(raw, post)
 
-  # Default state/country to Texas/USA if missing
-  state   = SiteSetting.texdem_events_default_state if state.blank?
-  country = SiteSetting.texdem_events_default_country
+      city  = extract_field(raw, "City")&.strip
+      state = extract_field(raw, "State")&.strip
+      zip   = (extract_field(raw, "ZIP") || extract_field(raw, "Zip"))&.strip
 
-  location_name = (extract_field(raw, "Location") || extract_field(raw, "Location name"))&.strip
-  address       = extract_field(raw, "Address")&.strip
+      # Default state/country to Texas/USA if missing
+      state   = SiteSetting.texdem_events_default_state if state.blank?
+      country = SiteSetting.texdem_events_default_country
 
-  external_url  = (extract_field(raw, "RSVP / More info") || extract_field(raw, "URL"))&.strip
-  graphic_url   = extract_field(raw, "Graphic")&.strip
+      location_name = (extract_field(raw, "Location") || extract_field(raw, "Location name"))&.strip
+      address       = extract_field(raw, "Address")&.strip
 
-  # Build query once (used only if we decide to geocode)
-  geocode_query = build_geocode_query(
-    address: address,
-    location_name: location_name,
-    city: city,
-    state: state,
-    zip: zip,
-    country: country
-  )
+      external_url = (extract_field(raw, "RSVP / More info") || extract_field(raw, "URL"))&.strip
+      graphic_url  = extract_field(raw, "Graphic")&.strip
 
-  # --- PHYSICAL LOCATION GUARD ---
-  # If we don't have a real-world location, do not geocode (prevents "plausible but wrong" pins).
-  has_physical_location =
-    address.present? ||
-    (city.present? && state.present?)
-
-  lat = nil
-  lng = nil
-
-  if has_physical_location && geocode_query.present?
-    raw_lat, raw_lng = ::TexdemEvents::Geocoder.geocode(geocode_query)
-
-    lat = normalize_coord(raw_lat)
-    lng = normalize_coord(raw_lng)
-
-    unless valid_lat_lng?(lat, lng)
-      Rails.logger.info(
-        "[TexdemEvents] Dropping invalid coords for post_id=#{post.id} query=#{geocode_query.inspect} raw=#{[raw_lat, raw_lng].inspect}"
+      # Build query once (used only if we decide to geocode)
+      geocode_query = build_geocode_query(
+        address: address,
+        location_name: location_name,
+        city: city,
+        state: state,
+        zip: zip,
+        country: country
       )
+
+      # --- PHYSICAL LOCATION GUARD ---
+      # If we don't have a real-world location, do not geocode (prevents "plausible but wrong" pins).
+      has_physical_location =
+        address.present? ||
+        (city.present? && state.present?)
+
       lat = nil
       lng = nil
+
+      if has_physical_location && geocode_query.present?
+        raw_lat, raw_lng = ::TexdemEvents::Geocoder.geocode(geocode_query)
+
+        lat = normalize_coord(raw_lat)
+        lng = normalize_coord(raw_lng)
+
+        unless valid_lat_lng?(lat, lng)
+          Rails.logger.info(
+            "[TexdemEvents] Dropping invalid coords for post_id=#{post.id} query=#{geocode_query.inspect} raw=#{[raw_lat, raw_lng].inspect}"
+          )
+          lat = nil
+          lng = nil
+        end
+      end
+      # --------------------------------
+
+      row = ::TexdemEvents::EventIndex.find_or_initialize_by(post_id: post.id)
+
+      row.topic_id      = topic.id
+      row.category_id   = topic.category_id
+      row.visibility    = "public"
+      row.title         = title
+      row.starts_at     = starts_at
+      row.ends_at       = ends_at
+      row.timezone      = tz
+      row.location_name = location_name
+      row.address       = address
+      row.city          = city
+      row.state         = state
+      row.zip           = zip
+      row.lat           = lat
+      row.lng           = lng
+      row.external_url  = external_url
+      row.graphic_url   = graphic_url
+      row.indexed_at    = Time.zone.now
+
+      row.save!
+    rescue => e
+      Rails.logger.warn("TexdemEvents Indexer failed post_id=#{post_id}: #{e.class} #{e.message}")
     end
-  end
-  # --------------------------------
-
-  row = ::TexdemEvents::EventIndex.find_or_initialize_by(post_id: post.id)
-
-  row.topic_id      = topic.id
-  row.category_id   = topic.category_id
-  row.visibility    = "public"
-  row.title         = title
-  row.starts_at     = starts_at
-  row.ends_at       = ends_at
-  row.timezone      = tz
-  row.location_name = location_name
-  row.address       = address
-  row.city          = city
-  row.state         = state
-  row.zip           = zip
-  row.lat           = lat
-  row.lng           = lng
-  row.external_url  = external_url
-  row.graphic_url   = graphic_url
-  row.indexed_at    = Time.zone.now
-
-  row.save!
-rescue => e
-  Rails.logger.warn("TexdemEvents Indexer failed post_id=#{post_id}: #{e.class} #{e.message}")
-end
-
 
     def self.deindex_post!(post_id)
       ::TexdemEvents::EventIndex.where(post_id: post_id).delete_all
